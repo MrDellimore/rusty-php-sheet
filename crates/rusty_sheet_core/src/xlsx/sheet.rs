@@ -26,6 +26,8 @@ use crate::{Error, Result};
 
 /// Excel's column limit (XFD). Larger references are treated as corrupt.
 const MAX_COLUMNS: usize = 16_384;
+/// Excel's last row. Higher row numbers are a row error, like columns past XFD.
+const MAX_ROWS: u32 = 1_048_576;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReadOptions {
@@ -227,13 +229,17 @@ impl SheetRows {
         if !self.parse_row(out)? {
             return Ok(false);
         }
-        if out.number > self.next_number {
+        // OpenSpout's counter only moves forward: a row numbered at or below one
+        // already emitted becomes an empty row at the next index (its data dropped).
+        // Moving back instead would re-emit every gap after it.
+        if out.number < self.next_number {
+            out.cells.clear();
+            out.number = self.next_number;
+        } else if out.number > self.next_number {
             self.held = Some(std::mem::take(out));
             out.number = self.next_number;
-            self.next_number += 1;
-        } else {
-            self.next_number = out.number + 1;
         }
+        self.next_number += 1;
         Ok(true)
     }
 
@@ -294,7 +300,7 @@ impl SheetRows {
                         self.capture = Capture::InlineT;
                     }
                     "row" => {
-                        out.number = row_number(&e, self.last_row);
+                        out.number = row_number(&e, self.last_row, &self.part)?;
                         self.last_row = out.number;
                         in_row = true;
                     }
@@ -309,7 +315,7 @@ impl SheetRows {
                     "v" if self.in_cell => self.cell.has_v = true,
                     "f" if self.in_cell => read_formula_attrs(&e, &mut self.cell),
                     "row" => {
-                        out.number = row_number(&e, self.last_row);
+                        out.number = row_number(&e, self.last_row, &self.part)?;
                         self.last_row = out.number;
                         return Ok(true);
                     }
@@ -474,10 +480,16 @@ fn cell_attrs(e: &BytesStart<'_>, next_col: usize, part: &str) -> Result<(usize,
     let mut col = None;
     let mut kind = None;
     let mut style = 0u32;
+    let mut too_far = None;
     // Duplicate-attribute checks cost ~5% of total read time and buy us nothing.
     for a in e.attributes().with_checks(false).flatten() {
         match a.key.local_name().as_ref() {
-            "r" => col = column_from_ref(&a.value),
+            "r" => {
+                col = column_from_ref(&a.value);
+                if col.is_some_and(|c| c >= MAX_COLUMNS) {
+                    too_far = Some(format!("cell reference `{}`", a.value));
+                }
+            }
             "t" => kind = Some(CellType::parse(Some(&a.value))),
             "s" => style = u32::try_from(php_int(&a.value)).unwrap_or(0),
             _ => {}
@@ -485,9 +497,11 @@ fn cell_attrs(e: &BytesStart<'_>, next_col: usize, part: &str) -> Result<(usize,
     }
     let col = col.unwrap_or(next_col);
     if col >= MAX_COLUMNS {
+        // Without `r`, the column follows the previous cell: column XFD + 1.
+        let what = too_far.unwrap_or_else(|| format!("cell {}", MAX_COLUMNS + 1));
         return Err(Error::InvalidData {
             part: part.to_string(),
-            message: format!("cell column {} is beyond XFD", col + 1),
+            message: format!("{what} is beyond column XFD"),
         });
     }
     Ok((col, kind.unwrap_or(CellType::Number), style))
@@ -506,12 +520,20 @@ fn read_formula_attrs(e: &BytesStart<'_>, cell: &mut CellState) {
     }
 }
 
-fn row_number(e: &BytesStart<'_>, last: u32) -> u32 {
-    xml::attr(e, "r")
+/// The row's `r` (PHP `(int)`), or the row after the previous one. A row past
+/// Excel's last row is an error; the parser resumes at the next `<row>`.
+fn row_number(e: &BytesStart<'_>, last: u32, part: &str) -> Result<u32> {
+    let n = xml::attr(e, "r")
         .map(|v| php_int(&v))
-        .and_then(|n| u32::try_from(n).ok())
         .filter(|&n| n > 0)
-        .unwrap_or(last + 1)
+        .unwrap_or(i64::from(last) + 1);
+    match u32::try_from(n) {
+        Ok(n) if n <= MAX_ROWS => Ok(n),
+        _ => Err(Error::InvalidData {
+            part: part.to_string(),
+            message: format!("row {n} is beyond row {MAX_ROWS}"),
+        }),
+    }
 }
 
 /// 0-based column index from the letters of a cell reference ("AB12" → 27).

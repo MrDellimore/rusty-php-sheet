@@ -5,6 +5,9 @@
 
 pub mod csv;
 pub mod error;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod value;
 pub mod writer;
 pub mod xlsx;

@@ -88,6 +88,10 @@ final class Reader
      * @param int|string $sheet 0-based index or sheet name
      * @return array<int, list<mixed>> 1-based source row number (CSV: line number) => row
      *
+     * Row errors (a cell past column XFD, a row past 1,048,576) throw unless
+     * `on_error => 'skip_row'`; malformed XML or zip data always throws. After an
+     * exception the sheet is finished: the next call returns [].
+     *
      * @throws ReaderException Unknown sheet, corrupt data, or the reader is closed.
      * @throws \ValueError     $max < 1, or $sheet is neither int nor string.
      */
