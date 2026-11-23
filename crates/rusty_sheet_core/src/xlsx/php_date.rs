@@ -218,10 +218,10 @@ pub fn format(p: &DateTimeParts, php_format: &str) -> Option<String> {
             's' => write!(out, "{:02}", p.second),
             'u' => write!(out, "000000"),
             'v' => write!(out, "000"),
+            // PHP's date_format() skips past the backslash and copies the next byte;
+            // at the end of the format that byte is the string's terminating NUL.
             '\\' => {
-                if let Some(next) = chars.next() {
-                    out.push(next);
-                }
+                out.push(chars.next().unwrap_or('\0'));
                 Ok(())
             }
             c if c.is_ascii_alphabetic() => return None, // other PHP format character
@@ -401,5 +401,30 @@ mod tests {
         assert_eq!(format_duration("[h]:mm", &n), "-6:00");
         let small = duration_parts(5.0 / 86_400.0);
         assert_eq!(format_duration("[h]:mm:ss", &small), "0:00:05");
+    }
+
+    /// Expected values from OpenSpout 5.15.3's toPHPDateFormat and PHP 8.5's
+    /// DateTimeInterface::format.
+    #[test]
+    fn rare_format_codes_like_openspout_and_php() {
+        for (excel, php) in [
+            ("[$]yyyy", "[$]Y"),            // `[$]` is not a locale block
+            ("[$yyyy", "[$Y"),              // nor is an unclosed `[$`
+            ("\"open yyyy", "\"open yyyy"), // unterminated quote
+            ("\"\" yyyy", "\"\" Y"),
+            ("\"a\nb\" yyyy", "\"a\nb\" Y"), // a quote can't span a line break
+            ("yyyy\\\\", "Y\\"),             // escaped backslash
+            ("yyyy\\\n", "Y\\\n"),           // a backslash before a line break stays
+        ] {
+            assert_eq!(to_php_date_format(excel), php, "{excel:?}");
+        }
+        let p = serial_to_parts(43_894.212_581_018_52); // 2020-03-04 05:06:07
+        assert_eq!(format(&p, "u v").as_deref(), Some("000000 000"));
+        assert_eq!(format(&p, "Y \\\\").as_deref(), Some("2020 \\"));
+        // Characters not rendered here make the caller fall back to PHP.
+        assert_eq!(format(&p, "Y x"), None);
+        // PHP appends the terminating NUL when a format ends in a lone backslash.
+        assert_eq!(format(&p, "Y\\").as_deref(), Some("2020\0"));
+        assert_eq!(php_year(-44), "-0044");
     }
 }
