@@ -30,6 +30,18 @@ const WRITER_STYLES = [
     'plain-col' => ['italic' => true],
     'builtin' => ['format' => 'mm-dd-yy'],
     'quote-format' => ['format' => '"Q"0 & <x>'],
+    // Phase 7: borders (OpenSpout styles and widths; 'all' is left, right, top, bottom).
+    'banner' => ['bold' => true, 'size' => 16, 'background' => '1F4E78', 'color' => 'FFFFFF', 'align' => 'center'],
+    'header' => ['bold' => true, 'background' => 'D9E1F2', 'border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => '808080']]],
+    'grid' => ['border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => 'BFBFBF']]],
+    'grid-same' => ['border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => 'BFBFBF']]],
+    'grid-reordered' => ['border' => ['top' => ['width' => 'thin', 'color' => 'BFBFBF'], 'left' => ['width' => 'thin', 'color' => 'BFBFBF'], 'right' => ['width' => 'thin', 'color' => 'BFBFBF'], 'bottom' => ['width' => 'thin', 'color' => 'BFBFBF']]],
+    'bottom-thick' => ['border' => ['bottom' => ['width' => 'thick']], 'format' => '#,##0.00'],
+    'dashed-medium' => ['border' => ['top' => ['style' => 'dashed'], 'bottom' => ['style' => 'dashed', 'width' => 'thin']]],
+    'dotted-double' => ['border' => ['left' => ['style' => 'dotted', 'width' => 'thick'], 'right' => ['style' => 'double', 'color' => 'FF0000']]],
+    'none-border' => ['border' => ['top' => ['style' => 'none']]],
+    'empty-border' => ['border' => []],
+    'link' => ['color' => '0563C1', 'underline' => true],
 ];
 
 function writer_scenarios(): array
@@ -110,12 +122,52 @@ function writer_scenarios(): array
         ], null, [2 => 'money']];
     }
 
+    // Phase 7: a report sheet like litportal's, and a summary that links to the others.
+    $banner = [
+        ['sheet', 'Report'],
+        ['autofilter', 'A3:D7'],
+        ['freeze', 3, 0],
+        ['width', 18.0, [1, 2, 3, 4]],
+        ['merge', 'A1:D1'],
+        ['row', ['Claimant report', null, null, null], 'banner', [], 28.0],
+        ['row', []],
+        ['row', ['Name', 'Amount', 'Status', 'Note'], 'header'],
+        ['row', ['Ann', 1250.5, 'Open', ''], 'grid', [1 => 'bottom-thick']],
+        ['row', ['Bob', 99.99, 'Closed', "two\nlines"], 'grid-same', [1 => 'bottom-thick']],
+        ['row', ['Cy', 0, 'Open', null], 'grid-reordered'],
+        ['row', [null, null, null, null], 'grid'], // empty cells with a border are written
+        ['merge', 'C8:D9'],
+        ['merge', 'a10:$B$11'],
+        ['row', ['styles', ['cell' => 'dashed', 'style' => 'dashed-medium'], ['cell' => 'dotted', 'style' => 'dotted-double'], ['cell' => 'none', 'style' => 'none-border'], ['cell' => 'empty', 'style' => 'empty-border']]],
+        ['sheet', 'Second & "quoted"'],
+        ['autofilter', 'B2:B2'],
+        ['row', ['x']],
+    ];
+
+    $links = [
+        ['sheet', 'Summary'],
+        ['row', [
+            ['link' => 'Go to Detail', 'target' => "#'Detail sheet'!A1", 'style' => 'link'],
+            ['link' => 'Detail via sheet://', 'target' => "sheet://'Detail sheet'!B2"],
+            ['link' => 'Site', 'target' => 'https://example.com/a?b=1&c=<2>', 'tooltip' => 'Open "example"'],
+            ['link' => 'Mail', 'target' => 'mailto:claims@example.com'],
+            ['link' => '=not a formula', 'target' => '#Other!A1', 'tooltip' => 'tip'],
+        ]],
+        ['row', ['no link', ['link' => 'Second site', 'target' => 'https://example.org/']]],
+        ['sheet', 'Detail sheet'],
+        ['row', [['link' => 'Back', 'target' => '#Summary!A1']]],
+        ['sheet', 'Other'],
+        ['merge', 'A1:B1'],
+    ];
+
     return [
         'kitchen sink' => $sink,
         'value types' => $types,
         'styles and precedence' => $styles,
         'sheets and setup' => $sheets,
         '3000 mixed rows' => $big,
+        'banner report' => $banner,
+        'links between sheets' => $links,
     ];
 }
 
