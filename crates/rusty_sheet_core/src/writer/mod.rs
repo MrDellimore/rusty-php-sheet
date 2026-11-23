@@ -6,8 +6,8 @@ pub mod style;
 pub mod xlsx;
 
 pub use csv::{CsvWriter, CsvWriterOptions};
-pub use style::Style;
-pub use xlsx::{Cell, CellData, MAX_COLUMNS, MAX_ROWS, XlsxWriter};
+pub use style::{Border, BorderLine, BorderPart, BorderSide, BorderWidth, Style};
+pub use xlsx::{Cell, CellData, CellRange, Link, MAX_COLUMNS, MAX_ROWS, XlsxWriter};
 
 #[cfg(test)]
 pub(crate) use escape::escape as escape_for_tests;

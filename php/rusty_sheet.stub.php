@@ -140,14 +140,41 @@ final class Writer
     public function showGridLines(bool $show): void {}
 
     /**
+     * Merge a range of the current sheet, e.g. 'A1:H1', any time before the sheet ends
+     * (the next addSheet() or close()). Written in call order. No-op for CSV.
+     *
+     * @throws \ValueError Not a range, a single cell, or overlapping an earlier merge.
+     */
+    public function mergeCells(string $range): void {}
+
+    /**
+     * Put an autofilter on a range of the current sheet, e.g. 'A1:F1', before the
+     * sheet's first row (like OpenSpout, it changes the sheet header). No-op for CSV.
+     *
+     * @throws \ValueError     Not a range.
+     * @throws WriterException After the sheet's first row.
+     */
+    public function setAutoFilter(string $range): void {}
+
+    /**
      * Register a style; returns its id. Like OpenSpout (keyed by object identity),
      * every call is a distinct style. Defaults: Arial 11, black. Unstyled cells use
      * OpenSpout's fallback style (Calibri 12).
      *
+     * Borders: one entry per side ('all' sets left, right, top and bottom). Each part
+     * defaults to OpenSpout's medium solid black. 'hair' (a hairline, any width) goes
+     * beyond OpenSpout, like PhpSpreadsheet's BORDER_HAIR. Styles whose parts were given
+     * in a different order get separate border entries, as in OpenSpout.
+     *
      * @param array{bold?: bool, italic?: bool, underline?: bool, strikethrough?: bool,
      *              size?: int, color?: string, font?: string, background?: string,
      *              format?: string, align?: string, valign?: string, wrap?: bool,
-     *              rotation?: int, shrink?: bool} $style  colors are 'RRGGBB'
+     *              rotation?: int, shrink?: bool,
+     *              border?: array<'top'|'right'|'bottom'|'left'|'all', array{
+     *                style?: 'solid'|'dashed'|'dotted'|'double'|'none'|'hair',
+     *                width?: 'thin'|'medium'|'thick',
+     *                color?: string,
+     *              }>} $style  colors are 'RRGGBB'
      */
     public function addStyle(array $style): int {}
 
@@ -169,10 +196,19 @@ final class Writer
     /** A string that is never treated as a formula ('' is written as an empty string). */
     public static function text(string $value, ?int $style = null): Cell {}
 
+    /**
+     * Text with a hyperlink. $target is a URL, '#Sheet!A1' / "#'My sheet'!A1" for a
+     * place in the workbook, or PhpSpreadsheet's "sheet://'My sheet'!A1" (the same).
+     * CSV writes the text only.
+     *
+     * @throws \ValueError Empty target.
+     */
+    public static function link(string $text, string $target, ?int $style = null, ?string $tooltip = null): Cell {}
+
     /** Finish the file. Without it the file is incomplete. Closing twice is fine. */
     public function close(): void {}
 }
 
-/** A value with its own style, from Writer::cell() / Writer::text(). */
+/** A value with its own style, from Writer::cell() / Writer::text() / Writer::link(). */
 final class Cell {}
 }

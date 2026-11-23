@@ -100,7 +100,8 @@ it('uses every documented option key and value in some test', function () {
         }
         preg_match_all("/'([\\w-]+)'(?=\\s*[|,}\\/])/", preg_replace('#//.*#', '', $shape), $values);
         foreach (array_unique($values[1]) as $value) {
-            if (! preg_match("/=>\\s*'".preg_quote($value, '/')."'/", $sources)) {
+            // Used as a value, or as a key where the shape keys by literal (border sides).
+            if (! preg_match("/=>\\s*'".preg_quote($value, '/')."'|'".preg_quote($value, '/')."'\\s*=>/", $sources)) {
                 $missing[] = "value '{$value}'";
             }
         }

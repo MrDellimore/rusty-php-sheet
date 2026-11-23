@@ -6,6 +6,9 @@
 //! - no empty comments / VML / shared-strings parts (OpenSpout always writes them);
 //! - numbers are written with full precision; OpenSpout goes through PHP's
 //!   `precision` ini setting and keeps 14 significant digits (`1/3` → `0.33333333333333`).
+//!
+//! Merged cells, the autofilter and hyperlinks are written after `<sheetData>` when a
+//! sheet ends, as OpenSpout does; only the links are kept in memory until then.
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -45,6 +48,95 @@ pub struct Cell<'a> {
     /// callers whose original value had a line break but is written differently
     /// (OpenSpout writes invalid UTF-8 as '' yet still checks the raw bytes).
     pub multiline: bool,
+    /// A hyperlink. Only string cells can carry one (OpenSpout: `StringCell`).
+    pub link: Option<Link<'a>>,
+}
+
+/// A hyperlink on a cell.
+#[derive(Debug, Clone, Copy)]
+pub struct Link<'a> {
+    /// A URL; `#Sheet!A1` or `#'My sheet'!A1` for a place in the workbook; or
+    /// PhpSpreadsheet's `sheet://'My sheet'!A1`, which means the same as `#…`.
+    pub target: &'a str,
+    pub tooltip: Option<&'a str>,
+}
+
+/// A rectangle of cells: 0-based columns, 1-based rows, first ≤ last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellRange {
+    pub first_col: u32,
+    pub first_row: u32,
+    pub last_col: u32,
+    pub last_row: u32,
+}
+
+impl CellRange {
+    /// `A1:C3`, `$A$1:$C$3`, `c3:a1` (corners in any order) or a single cell `B2`.
+    pub fn parse(range: &str) -> Option<CellRange> {
+        let (a, b) = range.split_once(':').unwrap_or((range, range));
+        let (c1, r1) = parse_cell_ref(a)?;
+        let (c2, r2) = parse_cell_ref(b)?;
+        Some(CellRange {
+            first_col: c1.min(c2),
+            first_row: r1.min(r2),
+            last_col: c1.max(c2),
+            last_row: r1.max(r2),
+        })
+    }
+
+    pub fn is_single_cell(&self) -> bool {
+        self.first_col == self.last_col && self.first_row == self.last_row
+    }
+
+    pub fn overlaps(&self, other: &CellRange) -> bool {
+        self.first_col <= other.last_col
+            && other.first_col <= self.last_col
+            && self.first_row <= other.last_row
+            && other.first_row <= self.last_row
+    }
+
+    /// `$A$1:$C$3`, as in a defined name.
+    fn absolute(&self) -> String {
+        let mut s = String::new();
+        for (col, row, sep) in [
+            (self.first_col, self.first_row, ":"),
+            (self.last_col, self.last_row, ""),
+        ] {
+            s.push('$');
+            column_letters(col as usize, &mut s);
+            let _ = write!(s, "${row}{sep}");
+        }
+        s
+    }
+}
+
+impl std::fmt::Display for CellRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = String::new();
+        column_letters(self.first_col as usize, &mut s);
+        let _ = write!(s, "{}:", self.first_row);
+        column_letters(self.last_col as usize, &mut s);
+        let _ = write!(s, "{}", self.last_row);
+        f.write_str(&s)
+    }
+}
+
+/// `B12` or `$B$12` → (1, 12). Columns A..XFD, rows 1..1048576.
+fn parse_cell_ref(r: &str) -> Option<(u32, u32)> {
+    let r = r.trim().strip_prefix('$').unwrap_or(r.trim());
+    let letters = r.bytes().take_while(u8::is_ascii_alphabetic).count();
+    if !(1..=3).contains(&letters) {
+        return None;
+    }
+    let col = r[..letters].bytes().fold(0u32, |acc, b| {
+        acc * 26 + u32::from(b.to_ascii_uppercase() - b'A' + 1)
+    }) - 1;
+    let digits = r[letters..].strip_prefix('$').unwrap_or(&r[letters..]);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let row: u32 = digits.parse().ok()?;
+    (col < MAX_COLUMNS as u32 && (1..=MAX_ROWS).contains(&row)).then_some((col, row))
 }
 
 /// Excel's sheet limits.
@@ -69,6 +161,14 @@ struct Sheet {
     rows: u32,
     /// The sheet's zip entry has been started (header written).
     open: bool,
+    auto_filter: Option<CellRange>,
+    /// In call order (OpenSpout writes them in that order).
+    merges: Vec<CellRange>,
+    /// `<hyperlink …/>` elements, in cell order.
+    hyperlinks: String,
+    /// The sheet's `.rels` entries for links to URLs.
+    link_rels: String,
+    external_links: u32,
 }
 
 pub struct XlsxWriter {
@@ -183,6 +283,33 @@ impl XlsxWriter {
         Ok(())
     }
 
+    /// Merge a range of the current sheet (`A1:H1`), any time before the sheet ends.
+    /// Overlapping merges and single cells are rejected (Excel would repair the file).
+    pub fn merge_cells(&mut self, range: &str) -> Result<()> {
+        let r = parse_range_arg(range)?;
+        if r.is_single_cell() {
+            return Err(Error::InvalidArgument(format!(
+                "can't merge {range}: a merge needs at least two cells"
+            )));
+        }
+        let sheet = self.sheets.last_mut().expect("always one sheet");
+        if let Some(other) = sheet.merges.iter().find(|m| m.overlaps(&r)) {
+            return Err(Error::InvalidArgument(format!(
+                "can't merge {r}: it overlaps the merged range {other}"
+            )));
+        }
+        sheet.merges.push(r);
+        Ok(())
+    }
+
+    /// Put an autofilter on a range of the current sheet. Before its first row:
+    /// the sheet header changes too (OpenSpout's `<sheetPr filterMode>`).
+    pub fn set_auto_filter(&mut self, range: &str) -> Result<()> {
+        let r = parse_range_arg(range)?;
+        self.current_before_rows("set an autofilter")?.auto_filter = Some(r);
+        Ok(())
+    }
+
     /// Write a row. A row whose cells are all empty is skipped, but still uses up a
     /// row number (OpenSpout parity).
     pub fn add_row(&mut self, cells: &[Cell<'_>], height: Option<f64>) -> Result<()> {
@@ -199,6 +326,14 @@ impl XlsxWriter {
             .find(|&h| h >= self.styles.len())
         {
             return Err(invalid(&format!("unknown style handle {h}")));
+        }
+        if cells
+            .iter()
+            .any(|c| c.link.is_some() && !matches!(c.data, CellData::Str(_)))
+        {
+            return Err(Error::InvalidArgument(
+                "only text cells can carry a hyperlink".into(),
+            ));
         }
         // OpenSpout (SHOULD_CREATE_NEW_SHEETS_AUTOMATICALLY) continues on a new sheet.
         if self.sheets.last().is_some_and(|s| s.rows >= MAX_ROWS) {
@@ -249,6 +384,11 @@ impl XlsxWriter {
                 self.buf,
                 "<c r=\"{col_letters}{row_number}\" s=\"{style_id}\""
             );
+            if let Some(link) = cell.link {
+                let sheet = self.sheets.last_mut().expect("always one sheet");
+                let cell_ref = format!("{col_letters}{row_number}");
+                sheet.add_link(&cell_ref, link);
+            }
             match cell.data {
                 CellData::Empty => self.buf.push_str("/>"),
                 CellData::Str(s) => {
@@ -297,8 +437,8 @@ impl XlsxWriter {
         for i in 0..self.sheets.len() {
             if !self.sheets[i].open {
                 self.start_sheet_part(i)?;
-                self.zip().write_all(b"</sheetData></worksheet>")?;
                 self.sheets[i].open = true;
+                self.end_sheet_part(i)?;
             }
         }
         let parts = [
@@ -355,7 +495,46 @@ impl XlsxWriter {
 
     fn finish_current_sheet(&mut self) -> Result<()> {
         if self.sheets.last().is_some_and(|s| s.open) {
-            self.zip().write_all(b"</sheetData></worksheet>")?;
+            self.end_sheet_part(self.sheets.len() - 1)?;
+        }
+        Ok(())
+    }
+
+    /// Everything after the rows (OpenSpout's order: autofilter, merges, hyperlinks),
+    /// then the sheet's `.rels` part if it links to URLs.
+    fn end_sheet_part(&mut self, index: usize) -> Result<()> {
+        let sheet = &mut self.sheets[index];
+        let mut s = String::from("</sheetData>");
+        if let Some(f) = sheet.auto_filter {
+            let _ = write!(s, "<autoFilter ref=\"{f}\"/>");
+        }
+        if !sheet.merges.is_empty() {
+            let _ = write!(s, "<mergeCells count=\"{}\">", sheet.merges.len());
+            for m in std::mem::take(&mut sheet.merges) {
+                let _ = write!(s, "<mergeCell ref=\"{m}\"/>");
+            }
+            s.push_str("</mergeCells>");
+        }
+        if !sheet.hyperlinks.is_empty() {
+            s.push_str("<hyperlinks>");
+            s.push_str(&std::mem::take(&mut sheet.hyperlinks));
+            s.push_str("</hyperlinks>");
+        }
+        s.push_str("</worksheet>");
+        let rels = std::mem::take(&mut sheet.link_rels);
+        self.zip().write_all(s.as_bytes())?;
+        if !rels.is_empty() {
+            let opts = self.opts;
+            self.zip().start_file(
+                format!("xl/worksheets/_rels/sheet{}.xml.rels", index + 1),
+                opts,
+            )?;
+            let part = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
+                 <Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n\
+                 {rels}</Relationships>"
+            );
+            self.zip().write_all(part.as_bytes())?;
         }
         Ok(())
     }
@@ -370,6 +549,12 @@ impl XlsxWriter {
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
              <worksheet xmlns=\"{NS_MAIN}\" xmlns:r=\"{NS_REL}\">"
         );
+        // OpenSpout always writes fitToPage along with an autofilter.
+        if sheet.auto_filter.is_some() {
+            s.push_str(
+                "<sheetPr filterMode=\"false\"><pageSetUpPr fitToPage=\"false\"/></sheetPr>",
+            );
+        }
         if let Some(v) = &sheet.view {
             s.push_str(&sheet_view_xml(v));
         }
@@ -462,7 +647,24 @@ impl XlsxWriter {
                 i + 1
             );
         }
-        s.push_str("    </sheets></workbook>");
+        s.push_str("    </sheets>");
+        // Excel needs the hidden _FilterDatabase name for each autofilter.
+        let mut names = String::new();
+        for (i, sheet) in self.sheets.iter().enumerate() {
+            if let Some(f) = sheet.auto_filter {
+                let _ = write!(
+                    names,
+                    "<definedName function=\"false\" hidden=\"true\" localSheetId=\"{i}\" \
+                     name=\"_xlnm._FilterDatabase\" vbProcedure=\"false\">'{}'!{}</definedName>",
+                    escape(&sheet.name),
+                    f.absolute()
+                );
+            }
+        }
+        if !names.is_empty() {
+            let _ = write!(s, "<definedNames>{names}</definedNames>");
+        }
+        s.push_str("</workbook>");
         s
     }
 
@@ -499,8 +701,55 @@ impl Sheet {
             widths: Vec::new(),
             rows: 0,
             open: false,
+            auto_filter: None,
+            merges: Vec::new(),
+            hyperlinks: String::new(),
+            link_rels: String::new(),
+            external_links: 0,
         }
     }
+
+    /// OpenSpout's `HyperlinkManager::addHyperlinks` for one cell.
+    fn add_link(&mut self, cell_ref: &str, link: Link<'_>) {
+        let tooltip = link
+            .tooltip
+            .map(|t| format!(" tooltip=\"{}\"", escape(t)))
+            .unwrap_or_default();
+        let location = link
+            .target
+            .strip_prefix('#')
+            .or_else(|| link.target.strip_prefix("sheet://"));
+        match location {
+            Some(loc) => {
+                let _ = write!(
+                    self.hyperlinks,
+                    "<hyperlink ref=\"{cell_ref}\" location=\"{}\"{tooltip}/>",
+                    escape(loc)
+                );
+            }
+            None => {
+                self.external_links += 1;
+                let n = self.external_links;
+                let _ = write!(
+                    self.hyperlinks,
+                    "<hyperlink ref=\"{cell_ref}\" r:id=\"rId_hyperlink{n}\"{tooltip}/>"
+                );
+                let _ = writeln!(
+                    self.link_rels,
+                    "  <Relationship Id=\"rId_hyperlink{n}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"{}\" TargetMode=\"External\"/>",
+                    escape(link.target)
+                );
+            }
+        }
+    }
+}
+
+fn parse_range_arg(range: &str) -> Result<CellRange> {
+    CellRange::parse(range).ok_or_else(|| {
+        Error::InvalidArgument(format!(
+            "'{range}' is not a cell range like A1:C10 (columns A–XFD, rows 1–{MAX_ROWS})"
+        ))
+    })
 }
 
 /// OpenSpout `SheetView::getXml()` with its default attributes.
@@ -639,6 +888,7 @@ mod tests {
             data: CellData::Str(s),
             style: None,
             multiline: false,
+            link: None,
         }
     }
 
@@ -686,6 +936,7 @@ mod tests {
             data: CellData::Str("a"),
             style: Some(99),
             multiline: false,
+            link: None,
         }];
         assert!(w.add_row(&bad, None).is_err());
         // No row number used and the sheet isn't started: setup is still allowed.
@@ -744,5 +995,118 @@ mod tests {
             "<pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/>"
         ));
         assert!(sheet_view_xml(&v).contains("showGridLines=\"false\""));
+    }
+
+    #[test]
+    fn cell_ranges() {
+        let r = |s| CellRange::parse(s).map(|r| r.to_string());
+        assert_eq!(r("A1:C3").as_deref(), Some("A1:C3"));
+        assert_eq!(r("$c$3:$a$1").as_deref(), Some("A1:C3"));
+        assert_eq!(r(" B2 ").as_deref(), Some("B2:B2"));
+        assert_eq!(r("XFD1048576:A1").as_deref(), Some("A1:XFD1048576"));
+        for bad in [
+            "", "A", "1", "A0", "XFE1", "A1048577", "AAAA1", "A1:", "A1:B2:C3", "A-1", "$$A1",
+            "A$$1",
+        ] {
+            assert_eq!(r(bad), None, "{bad}");
+        }
+        let a = CellRange::parse("B2:C3").unwrap();
+        assert!(a.overlaps(&CellRange::parse("C3:D4").unwrap()));
+        assert!(!a.overlaps(&CellRange::parse("D1:D9").unwrap()));
+        assert_eq!(a.absolute(), "$B$2:$C$3");
+    }
+
+    #[test]
+    fn merges_are_validated_and_written_after_the_rows() {
+        let path = tmp("merges");
+        let mut w = XlsxWriter::create(&path).unwrap();
+        let invalid = |e: Error| matches!(e, Error::InvalidArgument(_));
+        assert!(invalid(w.merge_cells("A1").unwrap_err()));
+        assert!(invalid(w.merge_cells("nope").unwrap_err()));
+        w.merge_cells("A1:C1").unwrap();
+        assert!(invalid(w.merge_cells("B1:B2").unwrap_err()));
+        w.add_row(&[cell("title")], None).unwrap();
+        w.merge_cells("A3:A4").unwrap(); // after rows is fine
+        w.close().unwrap();
+        let sheet = part(&path, "xl/worksheets/sheet1.xml");
+        assert!(sheet.ends_with(
+            "</sheetData><mergeCells count=\"2\"><mergeCell ref=\"A1:C1\"/><mergeCell ref=\"A3:A4\"/></mergeCells></worksheet>"
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn autofilter_needs_setting_before_rows() {
+        let path = tmp("filter");
+        let mut w = XlsxWriter::create(&path).unwrap();
+        w.add_sheet(Some("It's")).unwrap();
+        w.set_auto_filter("A1:B10").unwrap();
+        w.add_row(&[cell("x")], None).unwrap();
+        assert!(w.set_auto_filter("A1:B2").is_err());
+        w.close().unwrap();
+        let sheet = part(&path, "xl/worksheets/sheet1.xml");
+        assert!(sheet.contains(
+            "<sheetPr filterMode=\"false\"><pageSetUpPr fitToPage=\"false\"/></sheetPr><sheetData>"
+        ));
+        assert!(sheet.contains("</sheetData><autoFilter ref=\"A1:B10\"/></worksheet>"));
+        assert!(part(&path, "xl/workbook.xml").contains(
+            "<definedNames><definedName function=\"false\" hidden=\"true\" localSheetId=\"0\" name=\"_xlnm._FilterDatabase\" vbProcedure=\"false\">'It's'!$A$1:$B$10</definedName></definedNames></workbook>"
+        ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn hyperlinks_to_urls_and_places() {
+        let path = tmp("links");
+        let mut w = XlsxWriter::create(&path).unwrap();
+        let linked = |text, target, tooltip| Cell {
+            link: Some(Link { target, tooltip }),
+            ..cell(text)
+        };
+        w.add_row(
+            &[
+                linked("site", "https://example.com/?a=1&b=2", Some("Go <there>")),
+                linked("sheet", "#'Other sheet'!A1", None),
+                linked("php", "sheet://'Other sheet'!B2", None),
+                linked("again", "mailto:x@example.com", None),
+            ],
+            None,
+        )
+        .unwrap();
+        let mut not_text = linked("x", "#A1", None);
+        not_text.data = CellData::Int(1);
+        assert!(matches!(
+            w.add_row(&[not_text], None),
+            Err(Error::InvalidArgument(_))
+        ));
+        w.add_sheet(Some("Other sheet")).unwrap(); // the first sheet ends here
+        w.close().unwrap();
+        let sheet = part(&path, "xl/worksheets/sheet1.xml");
+        assert!(sheet.ends_with(concat!(
+            "</sheetData><hyperlinks>",
+            "<hyperlink ref=\"A1\" r:id=\"rId_hyperlink1\" tooltip=\"Go &lt;there&gt;\"/>",
+            "<hyperlink ref=\"B1\" location=\"'Other sheet'!A1\"/>",
+            "<hyperlink ref=\"C1\" location=\"'Other sheet'!B2\"/>",
+            "<hyperlink ref=\"D1\" r:id=\"rId_hyperlink2\"/>",
+            "</hyperlinks></worksheet>"
+        )));
+        let rels = part(&path, "xl/worksheets/_rels/sheet1.xml.rels");
+        assert!(rels.contains("Id=\"rId_hyperlink1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\" Target=\"https://example.com/?a=1&amp;b=2\" TargetMode=\"External\"/>\n"));
+        assert!(rels.ends_with("TargetMode=\"External\"/>\n</Relationships>"));
+        // A sheet without links to URLs has no .rels part.
+        assert!(!zip_has(&path, "xl/worksheets/_rels/sheet2.xml.rels"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn part(path: &std::path::Path, name: &str) -> String {
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name(name).unwrap(), &mut s).unwrap();
+        s
+    }
+
+    fn zip_has(path: &std::path::Path, name: &str) -> bool {
+        let zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
+        zip.index_for_name(name).is_some()
     }
 }

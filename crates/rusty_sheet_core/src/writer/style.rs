@@ -8,7 +8,9 @@
 //! - a string containing "\n" gets its style's wrap-text variant, registered once
 //!   per style (OpenSpout 5.15 `getWrapTextStyleId`).
 //!
-//! Borders are not supported (callers fall back to OpenSpout for them).
+//! - borders are shared like fills, keyed by their parts *in the order they were
+//!   given* (OpenSpout keys them by `serialize($border)`), and written left, right,
+//!   top, bottom.
 
 use std::collections::HashMap;
 
@@ -36,6 +38,115 @@ pub struct Style {
     /// `RRGGBB`, written as given.
     pub background: Option<String>,
     pub format: Option<String>,
+    pub border: Option<Border>,
+}
+
+/// One side of a cell's border.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
+impl BorderSide {
+    /// The order OpenSpout writes them in (`BorderName::cases()`).
+    pub const ALL: [BorderSide; 4] = [
+        BorderSide::Left,
+        BorderSide::Right,
+        BorderSide::Top,
+        BorderSide::Bottom,
+    ];
+
+    fn tag(self) -> &'static str {
+        match self {
+            BorderSide::Left => "left",
+            BorderSide::Right => "right",
+            BorderSide::Top => "top",
+            BorderSide::Bottom => "bottom",
+        }
+    }
+}
+
+/// OpenSpout's `BorderStyle`, plus `Hair` (beyond parity: PhpSpreadsheet's `hair`,
+/// which ignores the width).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderLine {
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Hair,
+}
+
+/// OpenSpout's `BorderWidth`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BorderWidth {
+    Thin,
+    Medium,
+    Thick,
+}
+
+/// One side: OpenSpout's `BorderPart` (defaults: black, medium, solid).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BorderPart {
+    pub side: BorderSide,
+    /// `RRGGBB`, written as given.
+    pub color: String,
+    pub width: BorderWidth,
+    pub line: BorderLine,
+}
+
+impl BorderPart {
+    pub fn new(side: BorderSide) -> Self {
+        BorderPart {
+            side,
+            color: "000000".into(),
+            width: BorderWidth::Medium,
+            line: BorderLine::Solid,
+        }
+    }
+
+    /// `BorderHelper::xlsxStyleMap`.
+    fn xml_style(&self) -> &'static str {
+        use BorderLine as L;
+        use BorderWidth as W;
+        match (self.line, self.width) {
+            (L::Solid, W::Thin) => "thin",
+            (L::Solid, W::Medium) => "medium",
+            (L::Solid, W::Thick) => "thick",
+            (L::Dotted, _) => "dotted",
+            (L::Dashed, W::Thin) => "dashed",
+            (L::Dashed, _) => "mediumDashed",
+            (L::Double, _) => "double",
+            (L::None, _) => "none",
+            (L::Hair, _) => "hair",
+        }
+    }
+}
+
+/// OpenSpout's `Border`: parts keyed by side, in the order first given. Two borders
+/// with the same parts in a different order are different borders (as in OpenSpout).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Border {
+    parts: Vec<BorderPart>,
+}
+
+impl Border {
+    /// Add a part; a side given again keeps its position and takes the new value.
+    pub fn with(mut self, part: BorderPart) -> Self {
+        match self.parts.iter_mut().find(|p| p.side == part.side) {
+            Some(existing) => *existing = part,
+            None => self.parts.push(part),
+        }
+        self
+    }
+
+    pub fn parts(&self) -> &[BorderPart] {
+        &self.parts
+    }
 }
 
 impl Default for Style {
@@ -55,6 +166,7 @@ impl Default for Style {
             shrink_to_fit: None,
             background: None,
             format: None,
+            border: None,
         }
     }
 }
@@ -154,6 +266,9 @@ pub struct StyleRegistry {
     /// Background colour → fill id, in registration order.
     fills: Vec<(String, u32)>,
     next_fill_id: u32,
+    border_of: Vec<u32>,
+    /// Registered borders; border id = index + 1 (0 is "no border").
+    borders: Vec<Border>,
     /// Style id → its wrap-text variant.
     wrap_of: HashMap<u32, u32>,
 }
@@ -169,6 +284,8 @@ impl Default for StyleRegistry {
             next_format_id: 164,
             fills: Vec::new(),
             next_fill_id: 2,
+            border_of: Vec::new(),
+            borders: Vec::new(),
             wrap_of: HashMap::new(),
         };
         r.push(Style::fallback());
@@ -240,17 +357,28 @@ impl StyleRegistry {
                 }
             },
         };
+        let border = match &style.border {
+            None => 0,
+            Some(b) => match self.borders.iter().position(|r| r == b) {
+                Some(i) => i as u32 + 1,
+                None => {
+                    self.borders.push(b.clone());
+                    self.borders.len() as u32
+                }
+            },
+        };
         self.styles.push(style);
         self.fill_of.push(fill);
         self.format_of.push(format);
+        self.border_of.push(border);
         id
     }
 
     /// `shouldApplyStyleOnEmptyCell`: empty cells are only written when their style
-    /// has a fill or a number format.
+    /// has a fill, a border or a number format.
     pub fn applies_to_empty_cell(&self, id: u32) -> bool {
         let i = id as usize;
-        self.fill_of[i] != 0 || self.format_of[i] != 0
+        self.fill_of[i] != 0 || self.format_of[i] != 0 || self.border_of[i] != 0
     }
 
     /// `StyleManager::getStylesXMLFileContent`.
@@ -308,25 +436,47 @@ impl StyleRegistry {
         }
         s.push_str("</fills>");
 
+        s.push_str(&format!(
+            "<borders count=\"{}\"><border><left/><right/><top/><bottom/></border>",
+            self.borders.len() + 1
+        ));
+        for border in &self.borders {
+            s.push_str("<border>");
+            for side in BorderSide::ALL {
+                if let Some(p) = border.parts.iter().find(|p| p.side == side) {
+                    let tag = side.tag();
+                    s.push_str(&format!(
+                        "<{tag} style=\"{}\"><color rgb=\"{}\"/></{tag}>\n",
+                        p.xml_style(),
+                        escape(&p.color)
+                    ));
+                }
+            }
+            s.push_str("</border>");
+        }
         s.push_str(
-            "<borders count=\"1\"><border><left/><right/><top/><bottom/></border></borders>\
+            "</borders>\
              <cellStyleXfs count=\"1\">\n    <xf borderId=\"0\" fillId=\"0\" fontId=\"0\" numFmtId=\"0\"/>\n</cellStyleXfs>",
         );
 
         s.push_str(&format!("<cellXfs count=\"{}\">", self.styles.len()));
         for (id, st) in self.styles.iter().enumerate() {
-            let (fill, fmt) = if id == 0 {
-                (0, 0)
+            let (fill, fmt, border) = if id == 0 {
+                (0, 0, 0)
             } else {
-                (self.fill_of[id], self.format_of[id])
+                (self.fill_of[id], self.format_of[id], self.border_of[id])
             };
             s.push_str(&format!(
-                "<xf numFmtId=\"{fmt}\" fontId=\"{id}\" fillId=\"{fill}\" borderId=\"0\" xfId=\"0\""
+                "<xf numFmtId=\"{fmt}\" fontId=\"{id}\" fillId=\"{fill}\" borderId=\"{border}\" xfId=\"0\""
             ));
             if st.should_apply_font() {
                 s.push_str(" applyFont=\"1\"");
             }
-            s.push_str(" applyBorder=\"0\"");
+            s.push_str(if st.border.is_some() {
+                " applyBorder=\"1\""
+            } else {
+                " applyBorder=\"0\""
+            });
             if st.has_alignment() {
                 s.push_str(" applyAlignment=\"1\"><alignment");
                 if let Some(h) = &st.horizontal {
@@ -382,5 +532,61 @@ mod tests {
         assert_eq!(r.fill_of, [0, 2, 0, 2]);
         assert!(r.applies_to_empty_cell(1));
         assert!(!r.applies_to_empty_cell(0));
+    }
+
+    #[test]
+    fn borders_are_shared_by_parts_in_order_and_written_left_right_top_bottom() {
+        let mut r = StyleRegistry::default();
+        let top_left = Border::default()
+            .with(BorderPart::new(BorderSide::Top))
+            .with(BorderPart {
+                line: BorderLine::Dashed,
+                width: BorderWidth::Thin,
+                ..BorderPart::new(BorderSide::Left)
+            });
+        let left_top = Border::default()
+            .with(top_left.parts()[1].clone())
+            .with(top_left.parts()[0].clone());
+        let styled = |b: &Border| Style {
+            border: Some(b.clone()),
+            ..Style::default()
+        };
+        assert_eq!(r.id_for(1, &styled(&top_left)), 1);
+        assert_eq!(r.id_for(2, &styled(&top_left)), 2);
+        assert_eq!(r.id_for(3, &styled(&left_top)), 3);
+        assert_eq!(r.border_of, [0, 1, 1, 2]);
+        assert!(r.applies_to_empty_cell(1));
+        let xml = r.styles_xml();
+        assert!(xml.contains(
+            "<borders count=\"3\"><border><left/><right/><top/><bottom/></border>\
+             <border><left style=\"dashed\"><color rgb=\"000000\"/></left>\n\
+             <top style=\"medium\"><color rgb=\"000000\"/></top>\n</border>"
+        ));
+        assert!(xml.contains("borderId=\"2\" xfId=\"0\" applyBorder=\"1\"/>"));
+        // A side given twice keeps its first position.
+        let again = top_left.clone().with(BorderPart::new(BorderSide::Top));
+        assert_eq!(again.parts()[0], BorderPart::new(BorderSide::Top));
+        assert_eq!(again.parts().len(), 2);
+    }
+
+    #[test]
+    fn border_styles_map_like_openspout_plus_hair() {
+        let style = |line, width| {
+            BorderPart {
+                line,
+                width,
+                ..BorderPart::new(BorderSide::Left)
+            }
+            .xml_style()
+        };
+        use BorderLine as L;
+        use BorderWidth as W;
+        assert_eq!(style(L::Solid, W::Thick), "thick");
+        assert_eq!(style(L::Dashed, W::Medium), "mediumDashed");
+        assert_eq!(style(L::Dashed, W::Thick), "mediumDashed");
+        assert_eq!(style(L::Dotted, W::Thick), "dotted");
+        assert_eq!(style(L::Double, W::Thin), "double");
+        assert_eq!(style(L::None, W::Medium), "none");
+        assert_eq!(style(L::Hair, W::Thick), "hair");
     }
 }
