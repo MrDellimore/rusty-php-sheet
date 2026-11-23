@@ -206,4 +206,13 @@ mod tests {
         assert_eq!(builtin_date_format(46), Some("[h]:mm:ss"));
         assert_eq!(builtin_date_format(4), None);
     }
+
+    #[test]
+    fn near_misses_are_not_durations_or_dates() {
+        assert!(!is_duration_format("[mm]:hh"));
+        assert!(!is_duration_format("[h]:ss"));
+        // An unclosed bracket is literal text, not a bracketed section.
+        assert!(is_date_format_code("[yyyy"));
+        assert!(!is_date_format_code("[Red]0.00"));
+    }
 }

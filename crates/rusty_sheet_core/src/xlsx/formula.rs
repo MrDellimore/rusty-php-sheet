@@ -287,4 +287,16 @@ mod tests {
     fn no_shift_is_identity() {
         assert_eq!(shift("anything(A1)", 0, 0), "anything(A1)");
     }
+
+    #[test]
+    fn tokens_that_are_not_references_are_copied() {
+        // Doubled quotes stay inside the string literal.
+        assert_eq!(shift("\"a\"\"A1\"&A1", 1, 0), "\"a\"\"A1\"&A2");
+        // `$$5` and `A$` are not references.
+        assert_eq!(shift("$$5+A$", 1, 1), "$$5+A$");
+        // A range of mixed kinds is two separate tokens; a lone column isn't shifted.
+        assert_eq!(shift("A1:B", 1, 0), "A2:B");
+        // `A1:` followed by something that isn't a reference: only A1 moves.
+        assert_eq!(shift("A1:$$5", 1, 0), "A2:$$5");
+    }
 }

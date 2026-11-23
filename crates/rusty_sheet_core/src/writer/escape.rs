@@ -79,4 +79,9 @@ mod tests {
         assert_eq!(truncate_for_cell(&long).chars().count(), MAX_CHARS_PER_CELL);
         assert_eq!(truncate_for_cell("short"), "short");
     }
+
+    #[test]
+    fn non_characters_are_escaped() {
+        assert_eq!(escape("a\u{FFFE}b\u{FFFF}"), "a_xFFFE_b_xFFFF_");
+    }
 }
