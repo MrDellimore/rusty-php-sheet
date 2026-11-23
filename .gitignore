@@ -1,0 +1,5 @@
+/target
+/tests/fixtures/generated/
+.idea/
+.DS_Store
+/docs/

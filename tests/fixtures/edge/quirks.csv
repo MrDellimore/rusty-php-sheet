@@ -1,0 +1,18 @@
+
+id,name,note
+1,plain,"quoted, with comma"
+2,"say ""hi""","multi
+line"
+3,  "spaced","after"text
+4,=SUM(A1:A3),=== Totals ===
+
+
+5,café 🚀,"crlf
+inside"
+6,ab," "
+7,,
+   
+,
+""
+8,last
+

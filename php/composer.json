@@ -1,0 +1,21 @@
+{
+    "name": "rusty-sheet/dev-harness",
+    "description": "Dev-only harness: PHP tests and OpenSpout parity checks for the rusty_sheet extension. Not published.",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": "^8.4"
+    },
+    "require-dev": {
+        "openspout/openspout": "^5.13",
+        "pestphp/pest": "^5.3"
+    },
+    "autoload-dev": {
+        "psr-4": { "RustySheet\\Dev\\": "src/" }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": { "pestphp/pest-plugin": true }
+    },
+    "minimum-stability": "stable"
+}

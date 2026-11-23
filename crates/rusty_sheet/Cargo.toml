@@ -1,0 +1,13 @@
+[package]
+name = "rusty_sheet"
+description = "PHP extension exposing rusty_sheet_core."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ext-php-rs = "0.16.5"
+rusty_sheet_core = { path = "../rusty_sheet_core" }

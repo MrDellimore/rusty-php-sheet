@@ -1,0 +1,20 @@
+[package]
+name = "rusty_sheet_core"
+description = "Streaming spreadsheet reader/writer core (no PHP dependency)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flate2.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "read_xlsx"
+harness = false

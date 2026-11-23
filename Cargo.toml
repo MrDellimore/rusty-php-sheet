@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/rusty_sheet_core", "crates/rusty_sheet", "tools/gen_fixture"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+quick-xml = "0.42"
+thiserror = "2"
+# Only deflate: XLSX packages never use other methods in practice. Keeps the build small.
+zip = { version = "9.8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+# The fixture generator should be fast even in dev builds.
+[profile.dev.package.gen_fixture]
+opt-level = 3
+
+# Benchmarks profile like the shipped extension.
+[profile.bench]
+lto = true
+codegen-units = 1
