@@ -1,0 +1,30 @@
+{
+    "machine": "Darwin arm64, PHP 8.5.8",
+    "rows": 400000,
+    "scenarios": {
+        "read-xlsx": {
+            "rows": 440002,
+            "seconds": 3.899,
+            "rss_mb": 68.8,
+            "rows_per_s": 112850
+        },
+        "read-csv": {
+            "rows": 400001,
+            "seconds": 0.781,
+            "rss_mb": 34,
+            "rows_per_s": 512165
+        },
+        "write-xlsx": {
+            "rows": 400000,
+            "seconds": 7.234,
+            "rss_mb": 29.7,
+            "rows_per_s": 55294
+        },
+        "write-csv": {
+            "rows": 400000,
+            "seconds": 2.928,
+            "rss_mb": 28.9,
+            "rows_per_s": 136612
+        }
+    }
+}
