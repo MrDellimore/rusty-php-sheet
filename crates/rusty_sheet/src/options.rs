@@ -73,17 +73,13 @@ impl ReaderOptions {
             return Ok(o);
         };
         for (key, value) in arr.iter() {
-            let key = match key {
-                ArrayKey::String(s) => s,
-                ArrayKey::Str(s) => s.to_string(),
-                ArrayKey::ZendString(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-                ArrayKey::Long(i) => {
-                    return Err(invalid_option(
-                        &i.to_string(),
-                        "option keys must be strings",
-                    ));
-                }
-            };
+            if let ArrayKey::Long(i) = key {
+                return Err(invalid_option(
+                    &i.to_string(),
+                    "option keys must be strings",
+                ));
+            }
+            let key = key.to_string();
             let value = value.dereference();
             match key.as_str() {
                 "format" => o.format = nullable_string(&key, value)?.map(|s| s.to_lowercase()),
@@ -147,12 +143,7 @@ impl ReaderOptions {
 fn parse_csv(arr: &ZendHashTable) -> PhpResult<CsvSettings> {
     let mut c = CsvSettings::default();
     for (key, value) in arr.iter() {
-        let key = match key {
-            ArrayKey::String(s) => s,
-            ArrayKey::Str(s) => s.to_string(),
-            ArrayKey::ZendString(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-            ArrayKey::Long(i) => format!("{i}"),
-        };
+        let key = key.to_string();
         let name = format!("csv.{key}");
         let value = value.dereference();
         match key.as_str() {

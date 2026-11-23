@@ -21,28 +21,24 @@ use rusty_sheet_core::Error;
 // Extends \Exception rather than SPL's \RuntimeException: SPL classes can't be
 // looked up during module startup, when these classes are registered.
 #[php(extends(ce = ce::exception, stub = "\\Exception"))]
-#[derive(Default)]
 pub struct SheetException;
 
 #[php_class]
 #[php(name = "RustySheet\\UnsupportedFormatException")]
 #[php(extends(SheetException))]
 #[php(flags = ClassFlags::Final)]
-#[derive(Default)]
 pub struct UnsupportedFormatException;
 
 #[php_class]
 #[php(name = "RustySheet\\ReaderException")]
 #[php(extends(SheetException))]
 #[php(flags = ClassFlags::Final)]
-#[derive(Default)]
 pub struct ReaderException;
 
 #[php_class]
 #[php(name = "RustySheet\\WriterException")]
 #[php(extends(SheetException))]
 #[php(flags = ClassFlags::Final)]
-#[derive(Default)]
 pub struct WriterException;
 
 pub fn unsupported(message: impl Into<String>) -> PhpException {
@@ -65,7 +61,6 @@ pub fn invalid_option(name: &str, message: &str) -> PhpException {
 pub fn from_core(err: Error, path: &str) -> PhpException {
     match err {
         Error::UnsupportedFormat(msg) => unsupported(format!("{path}: unsupported format ({msg})")),
-        Error::InvalidOption { name, message } => invalid_option(&name, &message),
         other => reader_error(format!("{path}: {other}")),
     }
 }

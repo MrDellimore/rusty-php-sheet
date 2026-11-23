@@ -18,6 +18,10 @@ namespace {
 
 namespace RustySheet {
 
+/**
+ * Base class of everything the extension throws. The extension's exceptions can be
+ * caught but not constructed from PHP (`new` throws).
+ */
 class Exception extends \Exception {}
 
 /**

@@ -198,11 +198,6 @@ impl SheetRows {
         &self.styles
     }
 
-    /// Format codes for `CellValue::Date { fmt, .. }`.
-    pub fn styles(&self) -> &Styles {
-        &self.styles
-    }
-
     /// Read the next row into `out`, reusing its allocation. Returns `false` at the end.
     pub fn next_row(&mut self, out: &mut Row) -> Result<bool> {
         if !self.opts.preserve_empty_rows {

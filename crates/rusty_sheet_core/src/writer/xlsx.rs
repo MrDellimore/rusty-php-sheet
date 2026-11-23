@@ -109,11 +109,6 @@ impl XlsxWriter {
         self.styles.len() - 1
     }
 
-    /// The style registered under `handle`.
-    pub fn style(&self, handle: usize) -> Option<&Style> {
-        self.styles.get(handle)
-    }
-
     /// The first call names the initial sheet; later calls start a new sheet.
     pub fn add_sheet(&mut self, name: Option<&str>) -> Result<()> {
         if !self.named_first {
@@ -329,11 +324,6 @@ impl XlsxWriter {
         self.zip
             .as_mut()
             .expect("writes happen before the file is finished")
-    }
-
-    /// Whether `close()` (or the final write) has happened.
-    pub fn is_closed(&self) -> bool {
-        self.closed
     }
 
     fn current_before_rows(&mut self, what: &str) -> Result<&mut Sheet> {

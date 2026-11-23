@@ -40,10 +40,6 @@ pub enum Error {
     /// Structurally invalid content that is well-formed XML (e.g. a bad cell reference).
     #[error("invalid data in {part}: {message}")]
     InvalidData { part: String, message: String },
-
-    /// An option passed by the caller is invalid.
-    #[error("invalid option `{name}`: {message}")]
-    InvalidOption { name: String, message: String },
 }
 
 impl Error {
