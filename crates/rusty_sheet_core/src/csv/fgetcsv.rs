@@ -33,6 +33,16 @@ impl<R: BufRead> LineSource<R> {
     }
 }
 
+/// PHP's `memcpy(tptr, buf + from, to - from)`: like `at()`, the byte just past
+/// the end of the line is the string's NUL terminator.
+fn copy(field: &mut Vec<u8>, buf: &[u8], from: usize, to: usize) {
+    let end = to.min(buf.len());
+    if from < end {
+        field.extend_from_slice(&buf[from..end]);
+    }
+    field.extend(std::iter::repeat_n(0, to.saturating_sub(end.max(from))));
+}
+
 /// `isspace()` in the C locale.
 fn is_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r')
@@ -40,12 +50,55 @@ fn is_space(b: u8) -> bool {
 
 /// `php_fgetcsv_lookup_trailing_spaces`: the length without one trailing
 /// `\r\n`, `\n` or `\r`.
+///
+/// PHP walks the line with `mblen()` and remembers the first byte of the last two
+/// *characters*; an invalid multibyte sequence is stepped over without being
+/// remembered. So when the line ends in `\r` followed by invalid UTF-8, PHP still
+/// sees `\r` as the last character and cuts that many bytes off the end, which
+/// are then the invalid bytes. This matches PHP running in a UTF-8 `LC_CTYPE`.
 fn trim_line_end(s: &[u8]) -> usize {
+    let len = s.len();
+    // Fast path: an ASCII byte is always a character of its own, so when the last
+    // byte (and, for `\n`, the one before it) is ASCII, no scan is needed.
     match s {
-        [.., b'\r', b'\n'] => s.len() - 2,
-        [.., b'\n'] | [.., b'\r'] => s.len() - 1,
-        _ => s.len(),
+        [] => return 0,
+        [.., last] if *last >= 0x80 => {}
+        [.., b'\r'] => return len - 1,
+        [.., b'\r', b'\n'] => return len - 2,
+        [.., prev, b'\n'] if *prev < 0x80 => return len - 1,
+        [b'\n'] => return len - 1,
+        [.., b'\n'] => {}
+        _ => return len,
     }
+    let mut last = [0u8; 2];
+    let mut i = 0;
+    while i < len {
+        match utf8_char_len(&s[i..]) {
+            Some(w) => {
+                last = [last[1], s[i]];
+                i += w;
+            }
+            None => i += 1, // invalid: skipped, not remembered
+        }
+    }
+    match last {
+        [b'\r', b'\n'] => len - 2,
+        [_, b'\n' | b'\r'] => len - 1,
+        _ => len,
+    }
+}
+
+/// The length of the valid UTF-8 character starting `s`, or `None` (mblen() < 0).
+fn utf8_char_len(s: &[u8]) -> Option<usize> {
+    let width = match s[0] {
+        0x00..=0x7F => return Some(1),
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
+        _ => return None,
+    };
+    let candidate = s.get(..width)?;
+    std::str::from_utf8(candidate).ok().map(|_| width)
 }
 
 /// Parse one CSV record starting with `first_line`, pulling continuation lines
@@ -97,17 +150,17 @@ pub fn parse_record<R: BufRead>(
                 if inc_len == 0 {
                     match state {
                         2 => {
-                            field.extend_from_slice(&buf[hunk..bptr - 1]);
+                            copy(&mut field, &buf, hunk, bptr - 1);
                             hunk = bptr;
                             break;
                         }
                         _ => {
                             if state == 1 {
-                                field.extend_from_slice(&buf[hunk..bptr]);
+                                copy(&mut field, &buf, hunk, bptr);
                                 hunk = bptr;
                             }
                             if hunk != line_end {
-                                field.extend_from_slice(&buf[hunk..bptr]);
+                                copy(&mut field, &buf, hunk, bptr);
                                 hunk = bptr;
                             }
                             // The line break is part of the field.
@@ -142,22 +195,24 @@ pub fn parse_record<R: BufRead>(
                             state = 0;
                         }
                         2 => {
-                            if buf[bptr] != enclosure {
+                            if at(&buf, bptr) != enclosure {
                                 // The closing enclosure.
-                                field.extend_from_slice(&buf[hunk..bptr - 1]);
+                                copy(&mut field, &buf, hunk, bptr - 1);
                                 hunk = bptr;
                                 break;
                             }
                             // A doubled enclosure: keep one.
-                            field.extend_from_slice(&buf[hunk..bptr]);
+                            copy(&mut field, &buf, hunk, bptr);
                             bptr += 1;
                             hunk = bptr;
                             state = 0;
                         }
+                        // A field opened at the very end of the input reads the
+                        // NUL terminator here, as PHP does.
                         _ => {
-                            if buf[bptr] == enclosure {
+                            if at(&buf, bptr) == enclosure {
                                 state = 2;
-                            } else if escape == Some(buf[bptr]) {
+                            } else if escape == Some(at(&buf, bptr)) {
                                 state = 1;
                             }
                             bptr += 1;
@@ -175,7 +230,7 @@ pub fn parse_record<R: BufRead>(
                 bptr += 1;
                 inc_len = usize::from(bptr < limit);
             }
-            field.extend_from_slice(&buf[hunk.min(bptr)..bptr]);
+            copy(&mut field, &buf, hunk.min(bptr), bptr);
             bptr += inc_len;
         } else {
             // 2B. Plain field.
@@ -270,5 +325,64 @@ mod tests {
     #[test]
     fn bare_cr_is_not_a_line_break() {
         assert_eq!(parse_all("a,b\rc,d\n"), [row(&["a", "b\rc", "d"])]);
+    }
+
+    #[test]
+    fn enclosure_edge_cases_like_php() {
+        assert_eq!(parse_all("\"a\"\"b\",c"), [row(&["a\"b", "c"])]);
+        assert_eq!(parse_all("\"x\" y,z"), [row(&["x y", "z"])]);
+        assert_eq!(parse_all("\"ab\"c\"\n"), [row(&["abc\""])]);
+        assert_eq!(parse_all("\"q\"\"\n\""), [row(&["q\"\n"])]);
+        assert_eq!(parse_all("\"unterminated"), [row(&["unterminated"])]);
+    }
+
+    /// Found by the differential test against PHP: input ending in an opening
+    /// enclosure (no line break after it) read past the end of the buffer.
+    #[test]
+    fn enclosure_at_end_of_input() {
+        assert_eq!(parse_all("\""), [row(&[""])]);
+        assert_eq!(parse_all("\"\",\""), [row(&["", ""])]);
+        assert_eq!(parse_all("\"\"\"\",\""), [row(&["\"", ""])]);
+        assert_eq!(parse_all("\"\"\n\""), [row(&[""]), row(&[""])]);
+    }
+
+    /// Found by the differential test against PHP 8.5 (LC_CTYPE=en_US.UTF-8): when
+    /// looking for the trailing line ending, PHP skips invalid multibyte sequences
+    /// without noting them, so a final `\r` followed by invalid bytes still counts
+    /// as the line ending and the last byte(s) are cut instead.
+    #[test]
+    fn line_end_lookup_skips_invalid_multibyte_like_php() {
+        assert_eq!(trim_line_end(b"\r\xFF"), 1);
+        assert_eq!(trim_line_end(b"a\r\xFF"), 2);
+        assert_eq!(trim_line_end(b"\"a\"\r\xFF"), 4);
+        assert_eq!(trim_line_end(b"a\r\n\xFF\xFE"), 3);
+        // A valid multibyte character is a character: no line ending after it.
+        assert_eq!(trim_line_end(b"\r\xC3\xA9"), 3);
+        assert_eq!(trim_line_end(b"x\xFF\r"), 2);
+        assert_eq!(trim_line_end(b"a\r\xFFb"), 4);
+        let rows = |input: &[u8]| {
+            let mut src = LineSource::new(input);
+            let line = src.next_line().unwrap().unwrap();
+            parse_record(line, &mut src, b',', b'"', None).unwrap()
+        };
+        assert_eq!(rows(b"\r\xFF"), Some(vec![vec![]]));
+        assert_eq!(rows(b"a\r\xFF"), Some(vec![b"a".to_vec()]));
+        assert_eq!(rows(b"\"a\"\r\xFF"), Some(vec![b"a\r".to_vec()]));
+    }
+
+    /// With a NUL escape character, an enclosure at the very end of the input reads
+    /// PHP's string terminator as an escape and copies it into the field. Expected
+    /// values from PHP 8.5's fgetcsv(); this used to slice past the buffer.
+    #[test]
+    fn nul_escape_at_end_of_input_copies_the_terminator() {
+        let parse = |input: &[u8]| {
+            let mut src = LineSource::new(input);
+            let line = src.next_line().unwrap().unwrap();
+            parse_record(line, &mut src, b',', b'"', Some(0)).unwrap()
+        };
+        assert_eq!(parse(b"\""), Some(vec![b"\0".to_vec()]));
+        assert_eq!(parse(b"a,\""), Some(vec![b"a".to_vec(), b"\0".to_vec()]));
+        assert_eq!(parse(b"\"x"), Some(vec![b"x".to_vec()]));
+        assert_eq!(parse(b"\"a\0b\""), Some(vec![b"a\0b".to_vec()]));
     }
 }
