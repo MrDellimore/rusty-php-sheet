@@ -25,6 +25,7 @@ const WRITER_STYLES = [
         'rotation' => 45, 'shrink' => true,
     ],
     'nowrap' => ['wrap' => false, 'align' => 'right'],
+    'centered' => ['align' => 'center'],
     'date-col' => ['format' => 'dd/mm/yyyy'],
     'plain-col' => ['italic' => true],
     'builtin' => ['format' => 'mm-dd-yy'],
@@ -72,6 +73,12 @@ function writer_scenarios(): array
         // A row of styled empty cells is still an empty row: skipped, number used up.
         ['row', [null, ''], 'yellow'],
         ['row', ['after empty']],
+        // Multiline text: the style's wrap variant is registered once and reused; a
+        // style that sets wrap itself (even to false) is used as is.
+        ['row', ["one\ntwo", "three\nfour"], 'bold'],
+        ['row', ["five\nsix"], 'bold'],
+        ['row', ["no\nwrap"], 'nowrap'],
+        ['row', ['centred, wrap unset'], 'centered'],
     ];
 
     $sheets = [
@@ -83,6 +90,10 @@ function writer_scenarios(): array
         ['row', ['second']],
         ['sheet', null],
         ['grid', true],
+        ['sheet', 'Columns only'],
+        ['freeze', 0, 2],
+        ['width', 9.0, []],
+        ['row', ['frozen columns']],
         ['sheet', 'Empty at end'],
     ];
 

@@ -1,0 +1,51 @@
+[package]
+name = "rusty_sheet_fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rusty_sheet_core = { path = "../crates/rusty_sheet_core", features = ["fuzzing"] }
+
+# Not part of the main workspace: cargo-fuzz builds with nightly and sanitizers.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "sheet"
+path = "fuzz_targets/sheet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_strings"
+path = "fuzz_targets/shared_strings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "styles"
+path = "fuzz_targets/styles.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csv"
+path = "fuzz_targets/csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xlsx"
+path = "fuzz_targets/xlsx.rs"
+test = false
+doc = false
+bench = false

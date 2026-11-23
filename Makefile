@@ -7,7 +7,7 @@ EXT_RELEASE := $(CURDIR)/target/release/librusty_sheet.$(EXT_SUFFIX)
 PHP ?= php
 ROWS ?= 400000
 
-.PHONY: help build release test test-rust test-php lint fmt php-deps fixtures large-fixture bench read-bench bench-php bench-openspout clean
+.PHONY: help build release test test-rust test-php lint fmt php-deps fixtures large-fixture bench read-bench bench-php bench-openspout coverage coverage-baseline fuzz bench-check bench-baseline gate clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -58,6 +58,24 @@ bench-php: release ## PHP-level read of the synthetic file via the extension (RO
 
 bench-openspout: php-deps ## OpenSpout baseline read of the synthetic file (ROWS=...)
 	$(PHP) php/bench/read-openspout.php tests/fixtures/generated/large-$(ROWS).xlsx
+
+coverage: php-deps ## Rust + PHP tests on an instrumented build; enforces coverage/ targets and ratchet
+	./scripts/coverage.sh
+
+coverage-baseline: php-deps ## As `coverage`, then raise coverage/baseline.json to the current numbers
+	./scripts/coverage.sh --update-baseline
+
+fuzz: ## Run every cargo-fuzz target (FUZZ_SECONDS=60 each; needs the nightly toolchain)
+	./scripts/fuzz.sh
+
+bench-check: release ## 400k-row read/write vs php/bench/baseline.json (>10% slower or >20% memory fails)
+	$(PHP) php/bench/check.php $(EXT_RELEASE) tests/fixtures/generated/large-400000.xlsx
+
+bench-baseline: release ## Record php/bench/baseline.json from this machine
+	$(PHP) php/bench/check.php $(EXT_RELEASE) tests/fixtures/generated/large-400000.xlsx --update
+
+gate: php-deps ## The regression gate: lint, coverage, fuzz, bench, sheet-stream (GATE_SKIP="fuzz" to skip)
+	./scripts/gate.sh
 
 clean: ## Remove build output and generated benchmark files
 	cargo clean

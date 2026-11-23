@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Entry points for `cargo fuzz` (see fuzz/). Never enabled by the extension.
+fuzzing = []
+
 [dependencies]
 flate2.workspace = true
 quick-xml.workspace = true

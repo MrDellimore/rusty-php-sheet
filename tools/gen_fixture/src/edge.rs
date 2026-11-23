@@ -522,6 +522,8 @@ const RENDER_FORMATS: &[&str] = &[
     "[ss]",
     "[s]",
     "[h]:mm:ss.0",
+    // Ends in a lone backslash after conversion: PHP's date() then emits a NUL byte.
+    "yyyy\\\\",
 ];
 
 const RENDER_VALUES: &[&str] = &[

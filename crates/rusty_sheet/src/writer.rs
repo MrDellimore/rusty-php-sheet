@@ -540,12 +540,7 @@ fn interval_value(obj: &ZendObject, for_csv: bool) -> PhpResult<Value> {
 fn parse_style(arr: &ZendHashTable) -> PhpResult<Style> {
     let mut st = Style::default();
     for (key, value) in arr.iter() {
-        let key = match key {
-            ArrayKey::String(s) => s,
-            ArrayKey::Str(s) => s.to_string(),
-            ArrayKey::ZendString(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-            ArrayKey::Long(i) => i.to_string(),
-        };
+        let key = key.to_string();
         let v = value.dereference();
         let name = format!("style.{key}");
         let boolean = || {
@@ -642,12 +637,7 @@ impl WriterOptions {
             return Ok(o);
         };
         for (key, value) in arr.iter() {
-            let key = match key {
-                ArrayKey::String(s) => s,
-                ArrayKey::Str(s) => s.to_string(),
-                ArrayKey::ZendString(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
-                ArrayKey::Long(i) => i.to_string(),
-            };
+            let key = key.to_string();
             let v = value.dereference();
             let string = |name: &str| {
                 v.string()
@@ -664,14 +654,7 @@ impl WriterOptions {
                         .filter(|_| v.is_array())
                         .ok_or_else(|| invalid_option("csv", "expected an array"))?;
                     for (k, cv) in csv.iter() {
-                        let k = match k {
-                            ArrayKey::String(s) => s,
-                            ArrayKey::Str(s) => s.to_string(),
-                            ArrayKey::ZendString(s) => {
-                                String::from_utf8_lossy(s.as_bytes()).into_owned()
-                            }
-                            ArrayKey::Long(i) => i.to_string(),
-                        };
+                        let k = k.to_string();
                         let cv = cv.dereference();
                         let name = format!("csv.{k}");
                         let byte = || -> PhpResult<u8> {

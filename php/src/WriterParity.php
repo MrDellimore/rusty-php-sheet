@@ -43,6 +43,27 @@ final class WriterParity
      */
     public static function writeOpenSpout(string $path, array $ops, array $styles, array $csv = []): void
     {
+        self::ignoringNanWarning(fn () => self::writeOpenSpoutUnguarded($path, $ops, $styles, $csv));
+    }
+
+    /**
+     * PHP 8.5 warns "unexpected NAN value was coerced to string" when a NAN becomes
+     * text: in OpenSpout's writers, and in the extension's CSV writer, which uses
+     * PHP's own strval() for floats. The scenarios write NAN on purpose, so only that
+     * message is ignored; anything else still surfaces.
+     */
+    private static function ignoringNanWarning(callable $write): void
+    {
+        set_error_handler(static fn (int $no, string $msg): bool => str_starts_with($msg, 'unexpected NAN value'), E_WARNING);
+        try {
+            $write();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    private static function writeOpenSpoutUnguarded(string $path, array $ops, array $styles, array $csv): void
+    {
         // .tsv is CSV with a tab, as Writer::create() treats it.
         $isCsv = str_ends_with($path, '.csv') || str_ends_with($path, '.tsv');
         if (str_ends_with($path, '.tsv')) {
@@ -120,6 +141,11 @@ final class WriterParity
     }
 
     public static function writeRusty(string $path, array $ops, array $styles, array $csv = []): void
+    {
+        self::ignoringNanWarning(fn () => self::writeRustyUnguarded($path, $ops, $styles, $csv));
+    }
+
+    private static function writeRustyUnguarded(string $path, array $ops, array $styles, array $csv): void
     {
         $writer = Writer::create($path, $csv === [] ? [] : ['csv' => $csv]);
         $ids = [];

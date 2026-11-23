@@ -17,6 +17,8 @@ mod formula;
 pub mod numfmt;
 mod package;
 pub mod php_date;
+#[cfg(test)]
+mod read_paths;
 mod shared_strings;
 mod sheet;
 mod styles;
