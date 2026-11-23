@@ -14,12 +14,17 @@ It is intended as a drop-in accelerator for laravel sheet stream (currently Open
 | `tests/fixtures/edge` | Hand-crafted XLSX edge cases (generated; committed) |
 | `tests/fixtures/laravel-excel` | Real Excel/LibreOffice/ONLYOFFICE files (MIT, see its README) |
 | `tests/fixtures/generated` | Large benchmark files (gitignored; `make large-fixture`) |
+| `fuzz/` | `cargo fuzz` targets (sheet, shared strings, styles, CSV, whole XLSX) |
+| `coverage/` | Coverage baseline (the ratchet) and the explained exclusions |
+| `scripts/` | `coverage.sh`, `fuzz.sh`, `gate.sh` |
 
 ## Prerequisites
 
 - Rust via [rustup](https://rustup.rs) (`clippy` and `rustfmt` components)
 - PHP 8.4+ with `php-config`, plus Composer
 - macOS: Xcode Command Line Tools. If the build can't find `libclang`, run `brew install llvm`.
+- For the regression gate: `rustup component add llvm-tools-preview`, `cargo install cargo-llvm-cov cargo-fuzz`,
+  and `rustup toolchain install nightly` (cargo-fuzz needs it).
 
 ## Dev commands
 
@@ -30,6 +35,12 @@ make lint            # clippy (warnings are errors) + rustfmt check
 make fixtures        # regenerate tests/fixtures/edge
 make large-fixture   # 400k × 50 synthetic file (ROWS=100000 for a smaller one)
 make bench-openspout ROWS=100000   # OpenSpout baseline
+
+make coverage        # Rust + PHP tests on an instrumented build; fails below target/baseline or on
+                     # an uncovered line not explained in coverage/exclusions.md (report: target/coverage/)
+make fuzz            # every cargo-fuzz target, FUZZ_SECONDS=60 each
+make bench-check     # 400k-row read/write vs php/bench/baseline.json
+make gate            # all of the above + lint + sheet-stream's suite: run before finishing a phase
 
 php php/bin/dump-openspout.php tests/fixtures/edge/dates.xlsx   # see OpenSpout's output with types
 ```
