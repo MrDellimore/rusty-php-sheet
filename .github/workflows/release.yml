@@ -22,7 +22,30 @@ permissions:
   contents: read
 
 jobs:
+  # The extension reports the Cargo package version (phpversion('rusty_sheet'),
+  # which Composer checks against `ext-rusty_sheet` constraints), and the assets are
+  # named after the tag. Refuse a tag that doesn't match, before building anything.
+  version:
+    name: Tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare
+        run: |
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          echo "Cargo.toml: $cargo_version"
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "Not a tag push; nothing to compare."
+            exit 0
+          fi
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$cargo_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $cargo_version in Cargo.toml. Bump [workspace.package] version (and Cargo.lock) to $tag, merge, and tag that commit."
+            exit 1
+          fi
+
   glibc:
+    needs: version
     name: Linux glibc ${{ matrix.arch }}, PHP ${{ matrix.php }} ${{ matrix.ts }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -68,6 +91,7 @@ jobs:
           path: dist/*.zip
 
   musl:
+    needs: version
     name: Linux musl ${{ matrix.arch }}, PHP ${{ matrix.php }} ${{ matrix.ts }}
     runs-on: ${{ matrix.runner }}
     strategy:

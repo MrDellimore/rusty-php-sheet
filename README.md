@@ -146,15 +146,24 @@ php php/bin/dump-openspout.php tests/fixtures/edge/dates.xlsx   # see OpenSpout'
 
 ### Releasing
 
-Push a tag such as `0.1.0`. `.github/workflows/release.yml`
-then builds the extension for every supported platform, PHP version and thread-safety
-mode, and runs the PHP suite against each binary. It packages each one under the name PIE
-looks for, attests them, and attaches them to a GitHub release for the tag.
-`scripts/release-build.sh` does the same for one platform locally.
+Versions follow [semantic versioning](https://semver.org). While the version is 0.x, a
+patch release (`0.1.1`) only fixes bugs and a minor release (`0.2.0`) may change the API;
+from `1.0.0`, minor releases add features without breaking anything. Users pin a range
+(`pie install "mrdellimore/rusty-sheet:^0.1"`, or `"ext-rusty_sheet": "^0.1"` in Composer)
+and get every compatible release, never a breaking one.
 
-Asset names use the version without a leading `v`. Prefer tags without one (`0.1.0`), so
-the version Composer reports for the package and the version in the asset names agree.
-PIE looks binaries up by that version.
+1. Set `version` under `[workspace.package]` in `Cargo.toml` and run `cargo check` so
+   `Cargo.lock` follows. The extension reports this version (`phpversion('rusty_sheet')`).
+2. Merge to `main`, then tag that commit with the same version, without a leading `v`
+   (`0.1.1`), and push the tag. Never move a tag that has been released; release a new
+   version instead.
+
+The tag push runs `.github/workflows/release.yml`. It checks that the tag matches
+`Cargo.toml`, builds the extension for every supported platform, PHP version and
+thread-safety mode, and runs the PHP suite against each binary. Then it packages each one
+under the name PIE looks for, attests them, and attaches them to a GitHub release for the
+tag. Packagist picks up the tag through its GitHub webhook. `scripts/release-build.sh`
+builds and packages for one platform locally.
 
 ## License
 
