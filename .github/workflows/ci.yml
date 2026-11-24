@@ -1,0 +1,83 @@
+# The regression gate on every push and pull request, minus the local-only checks:
+# the benchmark baseline (recorded on a developer machine; shared runners are too
+# noisy) and sheet-stream's suite (another repository).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, tests and coverage (PHP ${{ matrix.php }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04]
+        php: ['8.4', '8.5']
+        include:
+          - os: macos-14
+            php: '8.5'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: zip, mbstring, iconv, gd, intl
+          tools: composer, phpize, php-config
+          coverage: none
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt, llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint
+        run: make lint
+
+      - name: Rust and PHP tests under coverage (targets, ratchet, exclusions)
+        run: make coverage
+
+      - name: Coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-php${{ matrix.php }}-${{ matrix.os }}
+          path: target/coverage/
+          if-no-files-found: ignore
+
+  fuzz:
+    name: Fuzz (30 s per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Fuzz
+        run: FUZZ_SECONDS=30 ./scripts/fuzz.sh
+      - name: Crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
