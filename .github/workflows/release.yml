@@ -86,7 +86,7 @@ jobs:
 
   macos:
     name: macOS arm64, PHP ${{ matrix.php }} ${{ matrix.ts }}
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
