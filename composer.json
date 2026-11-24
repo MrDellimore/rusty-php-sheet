@@ -12,7 +12,7 @@
         "extension-name": "rusty_sheet",
         "support-zts": true,
         "support-nts": true,
-        "os-families": ["linux", "darwin"],
+        "os-families": ["linux"],
         "download-url-method": ["pre-packaged-binary"]
     }
 }

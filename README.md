@@ -31,8 +31,10 @@ A real 86 MB, 396k-row workbook reads in 3.4 s through laravel-sheet-stream, aga
 
 ## Install
 
-PHP 8.4 or 8.5 on Linux (x86_64 and arm64, glibc and musl/Alpine) or macOS (arm64), NTS
-or ZTS. With [PIE](https://github.com/php/pie):
+PHP 8.4 or 8.5 on Linux (x86_64 and arm64, glibc and musl/Alpine), NTS or ZTS. There are
+no prebuilt macOS binaries yet; on macOS, build from source (below).
+
+With [PIE](https://github.com/php/pie):
 
 ```bash
 pie install mrdellimore/rusty-sheet
