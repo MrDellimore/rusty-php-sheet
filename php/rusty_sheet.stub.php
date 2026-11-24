@@ -50,6 +50,7 @@ final class Reader
      *   dates?: 'serial'|'datetime'|'formatted', // default 'serial'
      *   timezone?: ?string,                      // only with dates => 'datetime'
      *   calculated_formulas?: bool,              // default false → "=FORMULA" strings
+     *   formulas_without_cached_value?: 'null'|'throw'|'formula', // default 'null'; only with calculated_formulas
      *   preserve_empty_rows?: bool,              // default false
      *   on_error?: 'throw'|'skip_row',           // recoverable row errors; default 'throw'
      *   csv?: array{
@@ -69,6 +70,11 @@ final class Reader
      * `timezone`) and DateInterval for elapsed-time formats like [h]:mm:ss. 'formatted' gives
      * the display string for the cell's number format, exactly as OpenSpout 5.15's
      * SHOULD_FORMAT_DATES renders it (sheet-stream's WithFormatData); other numbers stay numbers.
+     *
+     * Formulas: with calculated_formulas, a formula the writing application never calculated
+     * (no cached value) gives null, or per formulas_without_cached_value: 'throw' makes
+     * nextRows() throw a ReaderException naming the cell (the sheet is then finished), and
+     * 'formula' gives the "=FORMULA" text. A cached error result (#DIV/0!, #N/A) is always null.
      *
      * @throws UnsupportedFormatException Format not handled: fall back to OpenSpout.
      * @throws ReaderException            File missing, not an XLSX, or corrupt.

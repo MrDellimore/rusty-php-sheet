@@ -244,6 +244,42 @@ describe('formulas', function () {
 
         expect(array_column($rows, 3))->toBe([30, 'ab', false, null, 10, 12, 14, null, 45823, 3.3333333333333335, 9, 6]);
     });
+
+    describe('formulas_without_cached_value', function () {
+        // Row 4 cached an error (#DIV/0!); row 8 was never calculated.
+        it('gives null by default and with null', function (array $extra) {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), ['calculated_formulas' => true] + $extra)->nextRows(0);
+
+            expect($rows[4][3])->toBeNull()->and($rows[8][3])->toBeNull();
+        })->with(['default' => [[]], 'null' => [['formulas_without_cached_value' => 'null']]]);
+
+        it('gives the formula text with formula, and still null for a cached error', function () {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+                'calculated_formulas' => true,
+                'formulas_without_cached_value' => 'formula',
+            ])->nextRows(0);
+
+            expect(array_column($rows, 3))->toBe([30, 'ab', false, null, 10, 12, 14, '=B8*3', 45823, 3.3333333333333335, 9, 6]);
+        });
+
+        it('throws naming the cell with throw, but not for a cached error', function () {
+            $reader = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+                'calculated_formulas' => true,
+                'formulas_without_cached_value' => 'throw',
+            ]);
+
+            expect($reader->nextRows(0, 7))->toHaveCount(7)
+                ->and(fn () => $reader->nextRows(0))->toThrow(ReaderException::class, 'formulas.xlsx: Formulas!D8 has a formula with no cached value (=B8*3)')
+                // The sheet is finished: a retry doesn't skip past the bad row.
+                ->and($reader->nextRows(0))->toBe([]);
+        });
+
+        it('is ignored without calculated_formulas', function () {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), ['formulas_without_cached_value' => 'throw'])->nextRows(0);
+
+            expect($rows[8][3])->toBe('=B8*3');
+        });
+    });
 });
 
 it('closes', function () {

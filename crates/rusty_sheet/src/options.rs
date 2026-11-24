@@ -21,6 +21,19 @@ pub enum OnError {
     SkipRow,
 }
 
+/// `formulas_without_cached_value`: what a formula the writing application never
+/// calculated gives with `calculated_formulas`. Ignored without it (formulas are
+/// then always returned as text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncachedFormula {
+    /// `null`, as OpenSpout 5.15+ (the default).
+    Null,
+    /// A `ReaderException` naming the cell.
+    Throw,
+    /// The formula text, `"=…"`.
+    Formula,
+}
+
 /// `$options['csv']`. Unset fields use the format's defaults.
 #[derive(Debug, Clone, Default)]
 pub struct CsvSettings {
@@ -37,6 +50,7 @@ pub struct ReaderOptions {
     pub dates: DateMode,
     pub timezone: Option<String>,
     pub calculated_formulas: bool,
+    pub formulas_without_cached_value: UncachedFormula,
     pub preserve_empty_rows: bool,
     pub on_error: OnError,
     pub csv: CsvSettings,
@@ -49,6 +63,7 @@ impl Default for ReaderOptions {
             dates: DateMode::Serial,
             timezone: None,
             calculated_formulas: false,
+            formulas_without_cached_value: UncachedFormula::Null,
             preserve_empty_rows: false,
             on_error: OnError::Throw,
             csv: CsvSettings::default(),
@@ -61,6 +76,7 @@ const KNOWN: &[&str] = &[
     "dates",
     "timezone",
     "calculated_formulas",
+    "formulas_without_cached_value",
     "preserve_empty_rows",
     "on_error",
     "csv",
@@ -100,6 +116,19 @@ impl ReaderOptions {
                 }
                 "timezone" => o.timezone = nullable_string(&key, value)?,
                 "calculated_formulas" => o.calculated_formulas = boolean(&key, value)?,
+                "formulas_without_cached_value" => {
+                    o.formulas_without_cached_value = match string(&key, value)?.as_str() {
+                        "null" => UncachedFormula::Null,
+                        "throw" => UncachedFormula::Throw,
+                        "formula" => UncachedFormula::Formula,
+                        other => {
+                            return Err(invalid_option(
+                                &key,
+                                &format!("expected 'null', 'throw' or 'formula', got '{other}'"),
+                            ));
+                        }
+                    }
+                }
                 "preserve_empty_rows" => o.preserve_empty_rows = boolean(&key, value)?,
                 "on_error" => {
                     o.on_error = match string(&key, value)?.as_str() {

@@ -171,7 +171,7 @@ fn render(p: Part, drow: i64, dcol: i64) -> Option<String> {
     Some(s)
 }
 
-fn col_letters(mut n: i64) -> String {
+pub(crate) fn col_letters(mut n: i64) -> String {
     let mut buf = Vec::with_capacity(3);
     while n > 0 {
         let rem = (n - 1) % 26;

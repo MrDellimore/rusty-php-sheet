@@ -148,6 +148,14 @@ impl Reader {
             state.streams.insert(index, stream);
         }
 
+        let sheet_name = match &state.book {
+            Book::Xlsx(book) => book
+                .sheet_names()
+                .nth(index)
+                .unwrap_or_default()
+                .to_string(),
+            Book::Csv { .. } => String::new(),
+        };
         let State {
             path,
             opts,
@@ -170,7 +178,7 @@ impl Reader {
                 Arc::new(Styles::default()),
             ),
         };
-        let mut conv = Converter::new(opts, &shared, &styles, php_formats);
+        let mut conv = Converter::new(opts, path, &sheet_name, &shared, &styles, php_formats);
 
         let mut count = 0;
         while count < max {
@@ -180,7 +188,15 @@ impl Reader {
             };
             match next {
                 Ok(true) => {
-                    let arr = conv.row(&row.cells)?;
+                    let arr = match conv.row(row.number, &row.cells) {
+                        Ok(arr) => arr,
+                        // Don't let a retry carry on past the row that failed.
+                        Err(e) => {
+                            streams.remove(&index);
+                            finished.insert(index);
+                            return Err(e);
+                        }
+                    };
                     out.insert_at_index(i64::from(row.number), arr)?;
                     count += 1;
                 }

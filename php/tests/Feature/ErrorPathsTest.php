@@ -33,6 +33,9 @@ describe('reader options', function () {
         'dates serial' => [['dates' => 'serial']],
         'on_error throw' => [['on_error' => 'throw']],
         'on_error skip_row' => [['on_error' => 'skip_row']],
+        'formulas_without_cached_value null' => [['formulas_without_cached_value' => 'null']],
+        'formulas_without_cached_value throw' => [['formulas_without_cached_value' => 'throw']],
+        'formulas_without_cached_value formula' => [['formulas_without_cached_value' => 'formula']],
         'null format and timezone' => [['format' => null, 'timezone' => null]],
         'null csv' => [['csv' => null]],
     ]);
@@ -57,6 +60,8 @@ describe('reader options', function () {
         'csv escape not a string' => [['csv' => ['escape' => 1]], 'expected a string'],
         'csv int key' => [['csv' => [0 => ',']], 'unknown option'],
         'on_error unknown' => [['on_error' => 'ignore'], "expected 'throw' or 'skip_row'"],
+        'formulas_without_cached_value unknown' => [['formulas_without_cached_value' => 'zero'], "expected 'null', 'throw' or 'formula'"],
+        'formulas_without_cached_value not a string' => [['formulas_without_cached_value' => null], 'expected a string'],
     ]);
 });
 
