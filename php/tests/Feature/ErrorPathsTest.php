@@ -100,6 +100,13 @@ describe('broken XLSX files', function () {
         unlink($path);
     });
 
+    it('counts rows the same way: skipped with skip_row, an error by default', function () use ($beyondXfd) {
+        $path = tiny_xlsx($beyondXfd);
+        expect(Reader::open($path, ['on_error' => 'skip_row'])->rowCount(0))->toBe(2)
+            ->and(fn () => Reader::open($path)->rowCount(0))->toThrow(ReaderException::class, 'beyond column XFD');
+        unlink($path);
+    });
+
     it('always throws for malformed XML, even with skip_row', function () {
         $path = tiny_xlsx('<row r="1"><c><v>1</v></c></row><row r="2" a="></row>');
         expect(fn () => Reader::open($path, ['on_error' => 'skip_row'])->nextRows(0, 10))

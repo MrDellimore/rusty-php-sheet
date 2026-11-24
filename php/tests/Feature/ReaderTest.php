@@ -72,6 +72,57 @@ describe('options', function () {
     ]);
 });
 
+describe('rowCount', function () {
+    it('counts exactly the rows nextRows yields, for every fixture and sheet', function (string $path) {
+        foreach ([false, true] as $preserve) {
+            $options = ['preserve_empty_rows' => $preserve];
+            $reader = Reader::open($path, $options);
+            foreach ($reader->sheetNames() as $index => $name) {
+                $all = [];
+                try {
+                    while ($batch = $reader->nextRows($index, 100)) {
+                        $all += $batch;
+                    }
+                } catch (ReaderException) {
+                    expect(fn () => Reader::open($path, $options)->rowCount($index))->toThrow(ReaderException::class);
+                    continue;
+                }
+                $label = basename($path)." sheet $index, preserve_empty_rows ".var_export($preserve, true);
+                expect(Reader::open($path, $options)->rowCount($index))->toBe(count($all), $label)
+                    ->and(Reader::open($path, $options)->rowCount($name))->toBe(count($all), $label);
+            }
+        }
+    })->with(readable_fixtures());
+
+    it('reads on its own stream, leaving nextRows where it was', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'));
+        $first = $reader->nextRows(0, 5);
+
+        expect($reader->rowCount(0))->toBe(12)
+            ->and(array_keys($reader->nextRows(0, 100)))->toBe(range(6, 12))
+            ->and($reader->rowCount(0))->toBe(12); // also after the sheet is finished
+        expect(array_keys($first))->toBe(range(1, 5));
+    });
+
+    it('does not check cell values', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+            'calculated_formulas' => true,
+            'formulas_without_cached_value' => 'throw',
+        ]);
+
+        expect($reader->rowCount(0))->toBe(12);
+    });
+
+    it('throws for an unknown sheet and after close', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'));
+
+        expect(fn () => $reader->rowCount(5))->toThrow(ReaderException::class, 'no sheet at index 5')
+            ->and(fn () => $reader->rowCount('Nope'))->toThrow(ReaderException::class, "no sheet named 'Nope'");
+        $reader->close();
+        expect(fn () => $reader->rowCount(0))->toThrow(ReaderException::class, 'closed');
+    });
+});
+
 describe('empty_cells', function () {
     // A1 = 1, B1 a gap, C1 empty inline text, D1 an empty t="str", E1 = ' ', F1 = 5, then a
     // trailing empty cell. Row 2 is an empty-text formula, which is not blank.

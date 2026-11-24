@@ -131,20 +131,7 @@ impl Reader {
         }
 
         if !state.streams.contains_key(&index) {
-            let stream = match &mut state.book {
-                Book::Xlsx(book) => {
-                    let opts = ReadOptions {
-                        preserve_empty_rows: state.opts.preserve_empty_rows,
-                    };
-                    Stream::Xlsx(Box::new(
-                        book.rows(index, opts)
-                            .map_err(|e| from_core(e, &state.path))?,
-                    ))
-                }
-                Book::Csv { path, opts } => Stream::Csv(
-                    CsvReader::open(path, *opts).map_err(|e| from_core(e, &state.path))?,
-                ),
-            };
+            let stream = state.open_stream(index)?;
             state.streams.insert(index, stream);
         }
 
@@ -182,11 +169,7 @@ impl Reader {
 
         let mut count = 0;
         while count < max {
-            let next = match stream {
-                Stream::Xlsx(rows) => rows.next_row(row),
-                Stream::Csv(csv) => csv.next_row(row),
-            };
-            match next {
+            match stream.next_row(row) {
                 Ok(true) => {
                     let arr = match conv.row(row.number, &row.cells) {
                         Ok(arr) => arr,
@@ -217,6 +200,27 @@ impl Reader {
         Ok(out)
     }
 
+    /// How many rows `nextRows($sheet)` yields in total, under the same options
+    /// (`preserve_empty_rows`, `on_error`), without converting any cell to PHP.
+    /// Reads the sheet on a stream of its own: a `nextRows()` in progress is not
+    /// affected. Cell values aren't checked, so a sheet whose rows `nextRows()`
+    /// would throw on (`formulas_without_cached_value => 'throw'`) still counts.
+    pub fn row_count(&mut self, sheet: &Zval) -> PhpResult<i64> {
+        let state = self.state_mut()?;
+        let index = state.resolve_sheet(sheet)?;
+        let mut stream = state.open_stream(index)?;
+        let mut row = Row::default();
+        let mut count = 0;
+        loop {
+            match stream.next_row(&mut row) {
+                Ok(true) => count += 1,
+                Ok(false) => return Ok(count),
+                Err(Error::InvalidData { .. }) if state.opts.on_error == OnError::SkipRow => {}
+                Err(e) => return Err(from_core(e, &state.path)),
+            }
+        }
+    }
+
     /// Release the file handles. Further calls throw.
     pub fn close(&mut self) {
         self.state = None;
@@ -237,7 +241,34 @@ impl Reader {
     }
 }
 
+impl Stream {
+    fn next_row(&mut self, row: &mut Row) -> rusty_sheet_core::Result<bool> {
+        match self {
+            Stream::Xlsx(rows) => rows.next_row(row),
+            Stream::Csv(csv) => csv.next_row(row),
+        }
+    }
+}
+
 impl State {
+    /// A fresh row stream for sheet `index`, from the first row.
+    fn open_stream(&mut self, index: usize) -> PhpResult<Stream> {
+        Ok(match &mut self.book {
+            Book::Xlsx(book) => {
+                let opts = ReadOptions {
+                    preserve_empty_rows: self.opts.preserve_empty_rows,
+                };
+                Stream::Xlsx(Box::new(
+                    book.rows(index, opts)
+                        .map_err(|e| from_core(e, &self.path))?,
+                ))
+            }
+            Book::Csv { path, opts } => {
+                Stream::Csv(CsvReader::open(path, *opts).map_err(|e| from_core(e, &self.path))?)
+            }
+        })
+    }
+
     fn resolve_sheet(&self, sheet: &Zval) -> PhpResult<usize> {
         let sheet = sheet.dereference();
         let count = match &self.book {

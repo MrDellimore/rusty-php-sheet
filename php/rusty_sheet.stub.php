@@ -108,6 +108,18 @@ final class Reader
      */
     public function nextRows(int|string $sheet, int $max = 1000): array {}
 
+    /**
+     * How many rows nextRows($sheet) yields in total, under the same options
+     * (preserve_empty_rows, on_error), without converting cells to PHP values. Reads the
+     * sheet on a stream of its own, so a nextRows() in progress is unaffected. Cell values
+     * are not checked: rows nextRows() would throw on (formulas_without_cached_value =>
+     * 'throw') still count.
+     *
+     * @param int|string $sheet 0-based index or name
+     * @throws ReaderException Unknown sheet, unreadable row, or the reader is closed.
+     */
+    public function rowCount(int|string $sheet): int {}
+
     /** Release the file handles. Any further call throws ReaderException. */
     public function close(): void {}
 }
