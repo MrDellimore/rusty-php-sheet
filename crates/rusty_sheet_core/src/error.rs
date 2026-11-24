@@ -40,6 +40,11 @@ pub enum Error {
     /// Structurally invalid content that is well-formed XML (e.g. a bad cell reference).
     #[error("invalid data in {part}: {message}")]
     InvalidData { part: String, message: String },
+
+    /// A caller's argument is invalid (e.g. a malformed or overlapping cell range).
+    /// The PHP layer raises `ValueError`.
+    #[error("{0}")]
+    InvalidArgument(String),
 }
 
 impl Error {

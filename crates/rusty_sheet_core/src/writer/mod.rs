@@ -1,13 +1,16 @@
 //! Writers that produce the same files as OpenSpout's XLSX and CSV writers.
 
+pub mod autosize;
 pub mod csv;
 mod escape;
+pub mod sheet_parts;
 pub mod style;
 pub mod xlsx;
 
 pub use csv::{CsvWriter, CsvWriterOptions};
-pub use style::Style;
-pub use xlsx::{Cell, CellData, MAX_COLUMNS, MAX_ROWS, XlsxWriter};
+pub use sheet_parts::{Comment, Formula, TableOptions, TextRun, Validation};
+pub use style::{Border, BorderLine, BorderPart, BorderSide, BorderWidth, Style};
+pub use xlsx::{Cell, CellData, CellRange, Link, MAX_COLUMNS, MAX_ROWS, XlsxWriter};
 
 #[cfg(test)]
 pub(crate) use escape::escape as escape_for_tests;

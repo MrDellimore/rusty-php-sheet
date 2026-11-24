@@ -30,6 +30,18 @@ const WRITER_STYLES = [
     'plain-col' => ['italic' => true],
     'builtin' => ['format' => 'mm-dd-yy'],
     'quote-format' => ['format' => '"Q"0 & <x>'],
+    // Phase 7: borders (OpenSpout styles and widths; 'all' is left, right, top, bottom).
+    'banner' => ['bold' => true, 'size' => 16, 'background' => '1F4E78', 'color' => 'FFFFFF', 'align' => 'center'],
+    'header' => ['bold' => true, 'background' => 'D9E1F2', 'border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => '808080']]],
+    'grid' => ['border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => 'BFBFBF']]],
+    'grid-same' => ['border' => ['all' => ['style' => 'solid', 'width' => 'thin', 'color' => 'BFBFBF']]],
+    'grid-reordered' => ['border' => ['top' => ['width' => 'thin', 'color' => 'BFBFBF'], 'left' => ['width' => 'thin', 'color' => 'BFBFBF'], 'right' => ['width' => 'thin', 'color' => 'BFBFBF'], 'bottom' => ['width' => 'thin', 'color' => 'BFBFBF']]],
+    'bottom-thick' => ['border' => ['bottom' => ['width' => 'thick']], 'format' => '#,##0.00'],
+    'dashed-medium' => ['border' => ['top' => ['style' => 'dashed'], 'bottom' => ['style' => 'dashed', 'width' => 'thin']]],
+    'dotted-double' => ['border' => ['left' => ['style' => 'dotted', 'width' => 'thick'], 'right' => ['style' => 'double', 'color' => 'FF0000']]],
+    'none-border' => ['border' => ['top' => ['style' => 'none']]],
+    'empty-border' => ['border' => []],
+    'link' => ['color' => '0563C1', 'underline' => true],
 ];
 
 function writer_scenarios(): array
@@ -110,12 +122,87 @@ function writer_scenarios(): array
         ], null, [2 => 'money']];
     }
 
+    // Phase 7: a report sheet like litportal's, and a summary that links to the others.
+    $banner = [
+        ['sheet', 'Report'],
+        ['autofilter', 'A3:D7'],
+        ['freeze', 3, 0],
+        ['width', 18.0, [1, 2, 3, 4]],
+        ['merge', 'A1:D1'],
+        ['row', ['Claimant report', null, null, null], 'banner', [], 28.0],
+        ['row', []],
+        ['row', ['Name', 'Amount', 'Status', 'Note'], 'header'],
+        ['row', ['Ann', 1250.5, 'Open', ''], 'grid', [1 => 'bottom-thick']],
+        ['row', ['Bob', 99.99, 'Closed', "two\nlines"], 'grid-same', [1 => 'bottom-thick']],
+        ['row', ['Cy', 0, 'Open', null], 'grid-reordered'],
+        ['row', [null, null, null, null], 'grid'], // empty cells with a border are written
+        ['merge', 'C8:D9'],
+        ['merge', 'a10:$B$11'],
+        ['row', ['styles', ['cell' => 'dashed', 'style' => 'dashed-medium'], ['cell' => 'dotted', 'style' => 'dotted-double'], ['cell' => 'none', 'style' => 'none-border'], ['cell' => 'empty', 'style' => 'empty-border']]],
+        ['sheet', 'Second & "quoted"'],
+        ['autofilter', 'B2:B2'],
+        ['row', ['x']],
+    ];
+
+    $links = [
+        ['sheet', 'Summary'],
+        ['row', [
+            ['link' => 'Go to Detail', 'target' => "#'Detail sheet'!A1", 'style' => 'link'],
+            ['link' => 'Detail via sheet://', 'target' => "sheet://'Detail sheet'!B2"],
+            ['link' => 'Site', 'target' => 'https://example.com/a?b=1&c=<2>', 'tooltip' => 'Open "example"'],
+            ['link' => 'Mail', 'target' => 'mailto:claims@example.com'],
+            ['link' => '=not a formula', 'target' => '#Other!A1', 'tooltip' => 'tip'],
+        ]],
+        ['row', ['no link', ['link' => 'Second site', 'target' => 'https://example.org/']]],
+        ['sheet', 'Detail sheet'],
+        ['row', [['link' => 'Back', 'target' => '#Summary!A1']]],
+        ['sheet', 'Other'],
+        ['merge', 'A1:B1'],
+    ];
+
+    // Phase 9: data validation and comments (both OpenSpout features).
+    $forms = [
+        ['sheet', 'Form'],
+        ['validation', 'B2:B20', ['type' => 'list', 'values' => ['Yes', 'No', 'Maybe & <co>'], 'errorTitle' => 'Invalid selection', 'error' => 'Please choose one of the listed options.', 'prompt' => 'Pick one']],
+        ['validation', 'C2:C20', ['type' => 'list', 'source' => 'Lists!$A$1:$A$3', 'allowBlank' => false]],
+        ['validation', 'D2:D20', ['type' => 'list', 'source' => "'My lists'!\$A\$1:\$A\$3", 'showInputMessage' => false]],
+        ['validation', 'E2:E20', ['type' => 'whole', 'operator' => 'between', 'value1' => 1, 'value2' => 10, 'errorStyle' => 'warning']],
+        ['validation', 'F2:F20', ['type' => 'decimal', 'operator' => 'greaterThan', 'value1' => 0.5, 'errorStyle' => 'information', 'showErrorMessage' => false]],
+        ['validation', 'G2:G20', ['type' => 'date', 'operator' => 'greaterThanOrEqual', 'value1' => new DateTimeImmutable('2020-01-01')]],
+        ['validation', 'H2:H20', ['type' => 'date', 'operator' => 'notBetween', 'value1' => new DateTimeImmutable('2025-06-15 14:30'), 'value2' => new DateTimeImmutable('2025-12-31 23:59:59')]],
+        ['validation', 'I2:I20', ['type' => 'time', 'operator' => 'lessThan', 'value1' => new DateTimeImmutable('1970-01-01 14:30:15')]],
+        ['validation', 'J2:J20', ['type' => 'textLength', 'operator' => 'lessThanOrEqual', 'value1' => 50, 'promptTitle' => 'Short', 'prompt' => 'At most 50 characters']],
+        ['validation', 'K2:K20', ['type' => 'custom', 'formula' => 'AND(ISNUMBER(SEARCH("x",K2)),LEN(K2)<5)']],
+        ['validation', 'L2:L2', ['type' => 'whole', 'operator' => 'equal', 'value1' => 7]],
+        ['validation', 'M2:M20', ['type' => 'decimal', 'operator' => 'notEqual', 'value1' => 0, 'errorStyle' => 'stop']],
+        ['row', ['Name', 'Answer', 'From list', 'From other', 'Count', 'Ratio', 'Since', 'Not in', 'Before', 'Note', 'Has x', 'Seven']],
+        ['row', [
+            ['cell' => 'Ann', 'comment' => 'A plain note'],
+            ['cell' => 'Yes', 'comment' => ['runs' => [
+                ['text' => 'Reviewer: ', 'bold' => true],
+                ['text' => 'checked <twice> & signed', 'italic' => true, 'size' => 12, 'color' => 'FF0000', 'font' => 'Calibri'],
+            ]]],
+            ['cell' => null, 'comment' => ['text' => 'on an empty cell', 'visible' => true, 'width' => '150pt', 'height' => '40pt', 'fill' => '#E2EFDA', 'marginLeft' => '10pt', 'marginTop' => '2pt']],
+            'x',
+        ]],
+        ['row', [null, null], null, [], null], // an empty row: no comments from it
+        ['sheet', 'Lists'],
+        ['validation', 'B1:B3', ['type' => 'list', 'values' => ['a', 'b']]],
+        ['row', ['one', ['cell' => 'two', 'comment' => 'second sheet: shape ids carry on']]],
+        ['row', ['three']],
+        ['sheet', 'My lists'],
+        ['row', ['x']],
+    ];
+
     return [
         'kitchen sink' => $sink,
         'value types' => $types,
         'styles and precedence' => $styles,
         'sheets and setup' => $sheets,
         '3000 mixed rows' => $big,
+        'banner report' => $banner,
+        'links between sheets' => $links,
+        'validations and comments' => $forms,
     ];
 }
 
@@ -124,15 +211,21 @@ function tmp_path(string $ext): string
     return sys_get_temp_dir().'/'.uniqid('rs_writer_', true).'.'.$ext;
 }
 
-it('writes XLSX like OpenSpout', function (string $name) {
+it('writes XLSX like OpenSpout', function (string $name, bool $autoSize) {
     $ops = writer_scenarios()[$name];
     [$os, $rs] = [tmp_path('xlsx'), tmp_path('xlsx')];
     try {
         WriterParity::writeOpenSpout($os, $ops, WRITER_STYLES);
-        WriterParity::writeRusty($rs, $ops, WRITER_STYLES);
+        WriterParity::writeRusty($rs, $ops, WRITER_STYLES, autoSize: $autoSize);
 
         $expected = WriterParity::xlsxParts($os);
         $actual = WriterParity::xlsxParts($rs);
+        if ($autoSize) {
+            // Auto-size (beyond OpenSpout) changes <cols> and adds <dimension>; the rows,
+            // which took the buffered path, and everything else must still match.
+            $strip = fn (array $parts) => array_map(fn ($xml) => preg_replace('#<cols>.*?</cols>|<dimension ref="[^"]*"/>#', '', $xml), $parts);
+            [$expected, $actual] = [$strip($expected), $strip($actual)];
+        }
         expect(array_keys($actual))->toBe(array_keys($expected));
 
         // styles.xml must be byte-identical; cells are additionally compared by their
@@ -152,7 +245,7 @@ it('writes XLSX like OpenSpout', function (string $name) {
         @unlink($os);
         @unlink($rs);
     }
-})->with(array_keys(writer_scenarios()));
+})->with(array_keys(writer_scenarios()))->with(['streamed' => false, 'auto-sized (buffered)' => true]);
 
 it('writes CSV byte-for-byte like OpenSpout', function (array $csv, string $ext = 'csv') {
     $ops = array_values(array_filter(

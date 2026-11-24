@@ -11,8 +11,9 @@ use ext_php_rs::zend::ClassEntry;
 
 use rusty_sheet_core::Error;
 use rusty_sheet_core::writer::{
-    Cell as WCell, CellData, CsvWriter, CsvWriterOptions, Style, XlsxWriter, excel_serial,
-    interval_serial,
+    Border, BorderLine, BorderPart, BorderSide, BorderWidth, Cell as WCell, CellData, Comment,
+    CsvWriter, CsvWriterOptions, Formula, Link, Style, TableOptions, TextRun, Validation,
+    XlsxWriter, excel_serial, interval_serial,
 };
 
 use crate::exceptions::{WriterException, invalid_option, unsupported};
@@ -24,6 +25,9 @@ fn writer_error(message: impl Into<String>) -> PhpException {
 fn from_core(err: Error, path: &str) -> PhpException {
     match err {
         Error::InvalidData { message, .. } => writer_error(format!("{path}: {message}")),
+        Error::InvalidArgument(message) => {
+            PhpException::new(message, 0, ext_php_rs::zend::ce::value_error())
+        }
         other => writer_error(format!("{path}: {other}")),
     }
 }
@@ -64,6 +68,9 @@ enum Value {
 pub struct PhpCell {
     value: Value,
     style: Option<usize>,
+    /// `(target, tooltip)` from `Writer::link()`.
+    link: Option<(String, Option<String>)>,
+    comment: Option<Comment>,
 }
 
 /// What a writer is writing.
@@ -105,7 +112,14 @@ impl Writer {
         });
         let target = match format.as_str() {
             "xlsx" => Target::Xlsx(Box::new(XlsxState {
-                writer: XlsxWriter::create(Path::new(&path)).map_err(|e| from_core(e, &path))?,
+                writer: {
+                    let mut w =
+                        XlsxWriter::create(Path::new(&path)).map_err(|e| from_core(e, &path))?;
+                    if let Some(dir) = &o.temp_dir {
+                        w.set_temp_dir(Path::new(dir));
+                    }
+                    w
+                },
                 date_format: o.date_format,
                 datetime_format: o.datetime_format,
                 date_style: None,
@@ -197,6 +211,100 @@ impl Writer {
         Ok(())
     }
 
+    /// Data validation on a range of the current sheet, any time before it ends.
+    /// Ignored for CSV.
+    pub fn add_validation(&mut self, range: String, rule: &ZendHashTable) -> PhpResult<()> {
+        let path = self.path.clone();
+        let rule = parse_validation(rule)?;
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .add_validation(&range, rule)
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
+    /// An Excel table on a range of the current sheet, before its header row.
+    /// Ignored for CSV.
+    pub fn add_table(
+        &mut self,
+        range: String,
+        name: String,
+        options: Option<&ZendHashTable>,
+    ) -> PhpResult<()> {
+        let path = self.path.clone();
+        let options = parse_table_options(options)?;
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .add_table(&range, &name, options)
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
+    /// Size columns to their content like PhpSpreadsheet's auto-size: `true` for every
+    /// column, or a list of 1-based columns. Before the sheet's first row; the sheet's
+    /// rows are then buffered in a temp file until it ends. Ignored for CSV.
+    pub fn auto_size_columns(&mut self, columns: Option<&Zval>) -> PhpResult<()> {
+        let path = self.path.clone();
+        let list: Option<Vec<u32>> = if columns.is_none_or(|c| c.dereference().is_true()) {
+            None
+        } else if let Some(arr) = columns
+            .map(Zval::dereference)
+            .filter(|c| c.is_array())
+            .and_then(Zval::array)
+        {
+            Some(
+                arr.values()
+                    .map(|v| {
+                        v.long()
+                            .filter(|_| v.is_long())
+                            .and_then(|c| u32::try_from(c).ok())
+                            .filter(|&c| c > 0)
+                            .ok_or_else(|| {
+                                invalid_option("columns", "column numbers are 1-based ints")
+                            })
+                    })
+                    .collect::<PhpResult<_>>()?,
+            )
+        } else {
+            return Err(invalid_option(
+                "columns",
+                "expected true (every column) or a list of 1-based column numbers",
+            ));
+        };
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .auto_size_columns(list.as_deref())
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
+    /// Merge a range of the current sheet (`'A1:H1'`), any time before the sheet ends.
+    /// Ignored for CSV.
+    pub fn merge_cells(&mut self, range: String) -> PhpResult<()> {
+        let path = self.path.clone();
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .merge_cells(&range)
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
+    /// Put an autofilter on a range of the current sheet, before its first row.
+    /// Ignored for CSV.
+    pub fn set_auto_filter(&mut self, range: String) -> PhpResult<()> {
+        let path = self.path.clone();
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .set_auto_filter(&range)
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
     /// Register a style and return its id. Every call is a distinct style.
     pub fn add_style(&mut self, style: &ZendHashTable) -> PhpResult<i64> {
         let style = parse_style(style)?;
@@ -222,14 +330,14 @@ impl Writer {
         let path = self.path.clone();
         let target = self.target_mut()?;
         let is_csv = matches!(target, Target::Csv { .. });
-        let converted: Vec<(Value, Option<usize>, bool)> = values
+        let converted: Vec<Converted> = values
             .values()
             .map(|z| to_value(z, is_csv))
             .collect::<PhpResult<_>>()?;
 
         match target {
             Target::Csv { writer, .. } => {
-                let fields: Vec<Vec<u8>> = converted.iter().map(|(v, ..)| csv_field(v)).collect();
+                let fields: Vec<Vec<u8>> = converted.iter().map(|c| csv_field(&c.value)).collect();
                 writer.add_row(&fields).map_err(|e| from_core(e, &path))
             }
             Target::Xlsx(x) => {
@@ -240,7 +348,7 @@ impl Writer {
                 let unknown = row_style
                     .into_iter()
                     .chain(column_styles.iter().flatten().copied())
-                    .chain(converted.iter().filter_map(|(_, own, _)| *own))
+                    .chain(converted.iter().filter_map(|c| c.own_style))
                     .find(|&h| h >= known);
                 if let Some(h) = unknown {
                     return Err(writer_error(format!("{path}: unknown style id {h}")));
@@ -251,7 +359,7 @@ impl Writer {
                 // OpenSpout's htmlspecialchars() turns invalid UTF-8 into ''.
                 let texts: Vec<String> = converted
                     .iter()
-                    .filter_map(|(v, ..)| match v {
+                    .filter_map(|c| match &c.value {
                         Value::Text(b) | Value::Formula(b) => {
                             Some(String::from_utf8(b.clone()).unwrap_or_default())
                         }
@@ -259,7 +367,8 @@ impl Writer {
                     })
                     .collect();
                 let mut text_iter = texts.iter();
-                for (i, (v, own_style, is_native)) in converted.iter().enumerate() {
+                for (i, c) in converted.iter().enumerate() {
+                    let (v, own_style, is_native) = (&c.value, &c.own_style, &c.native);
                     let column_style = column_styles.get(i).copied().flatten().or(row_style);
                     let style = if *is_native { *own_style } else { column_style };
                     // OpenSpout checks the raw bytes for "\n", even when it writes ''.
@@ -293,6 +402,11 @@ impl Writer {
                         data,
                         style,
                         multiline,
+                        link: c.link.as_ref().map(|(target, tooltip)| Link {
+                            target,
+                            tooltip: tooltip.as_deref(),
+                        }),
+                        comment: c.comment.as_ref(),
                     });
                 }
                 x.writer
@@ -303,17 +417,39 @@ impl Writer {
     }
 
     /// A value with its own style (OpenSpout's native-Cell passthrough).
-    pub fn cell(value: &Zval, style: Option<i64>) -> PhpResult<PhpCell> {
+    pub fn cell(value: &Zval, style: Option<i64>, comment: Option<&Zval>) -> PhpResult<PhpCell> {
         // The target format isn't known here, so keep the CSV forms too.
-        let (value, ..) = to_value(value, true)?;
+        let c = to_value(value, true)?;
         Ok(PhpCell {
-            value,
+            value: c.value,
             style: style.map(style_handle).transpose()?,
+            link: None,
+            comment: parse_comment(comment)?,
+        })
+    }
+
+    /// Text with a hyperlink: a URL, `#'Sheet name'!A1` for a place in the workbook,
+    /// or PhpSpreadsheet's `sheet://'Sheet name'!A1`. CSV writes the text only.
+    pub fn link(
+        text: String,
+        target: String,
+        style: Option<i64>,
+        tooltip: Option<String>,
+        comment: Option<&Zval>,
+    ) -> PhpResult<PhpCell> {
+        if target.is_empty() || target == "#" || target == "sheet://" {
+            return Err(invalid_option("target", "a link needs a target"));
+        }
+        Ok(PhpCell {
+            value: Value::Text(text.into_bytes()),
+            style: style.map(style_handle).transpose()?,
+            link: Some((target, tooltip)),
+            comment: parse_comment(comment)?,
         })
     }
 
     /// Text that is never treated as a formula.
-    pub fn text(value: &Zval, style: Option<i64>) -> PhpResult<PhpCell> {
+    pub fn text(value: &Zval, style: Option<i64>, comment: Option<&Zval>) -> PhpResult<PhpCell> {
         let bytes = value
             .zend_str()
             .map(|s| s.as_bytes().to_vec())
@@ -322,6 +458,8 @@ impl Writer {
         Ok(PhpCell {
             value: Value::Text(bytes),
             style: style.map(style_handle).transpose()?,
+            link: None,
+            comment: parse_comment(comment)?,
         })
     }
 
@@ -420,18 +558,40 @@ fn csv_field(v: &Value) -> Vec<u8> {
     }
 }
 
-/// Convert a PHP value. Returns the value, a native cell's own style, and whether it
-/// was a native `RustySheet\Cell` (whose style is used as is).
-fn to_value(z: &Zval, for_csv: bool) -> PhpResult<(Value, Option<usize>, bool)> {
+/// A PHP value converted for writing.
+struct Converted {
+    value: Value,
+    /// A native `RustySheet\Cell`'s own style.
+    own_style: Option<usize>,
+    /// It was a native `RustySheet\Cell`, whose style is used as is.
+    native: bool,
+    link: Option<(String, Option<String>)>,
+    comment: Option<Comment>,
+}
+
+impl From<Value> for Converted {
+    fn from(value: Value) -> Self {
+        Converted {
+            value,
+            own_style: None,
+            native: false,
+            link: None,
+            comment: None,
+        }
+    }
+}
+
+/// Convert a PHP value.
+fn to_value(z: &Zval, for_csv: bool) -> PhpResult<Converted> {
     let z = z.dereference();
     if z.is_null() {
-        return Ok((Value::Empty, None, false));
+        return Ok(Value::Empty.into());
     }
     if z.is_bool() {
-        return Ok((Value::Bool(z.is_true()), None, false));
+        return Ok(Value::Bool(z.is_true()).into());
     }
     if z.is_long() {
-        return Ok((Value::Int(z.long().unwrap_or(0)), None, false));
+        return Ok(Value::Int(z.long().unwrap_or(0)).into());
     }
     if z.is_double() {
         let v = z.double().unwrap_or(0.0);
@@ -441,29 +601,32 @@ fn to_value(z: &Zval, for_csv: bool) -> PhpResult<(Value, Option<usize>, bool)> 
         } else {
             String::new()
         };
-        return Ok((Value::Float { v, php }, None, false));
+        return Ok(Value::Float { v, php }.into());
     }
     if let Some(s) = z.zend_str().filter(|_| z.is_string()) {
         let bytes = s.as_bytes();
-        return Ok((
-            match bytes {
-                [] => Value::Empty,
-                [b'=', rest @ ..] => Value::Formula(rest.to_vec()),
-                _ => Value::Text(bytes.to_vec()),
-            },
-            None,
-            false,
-        ));
+        return Ok(match bytes {
+            [] => Value::Empty,
+            [b'=', rest @ ..] => Value::Formula(rest.to_vec()),
+            _ => Value::Text(bytes.to_vec()),
+        }
+        .into());
     }
     if let Some(obj) = z.object() {
         if let Some(cell) = z.extract::<&PhpCell>() {
-            return Ok((cell.value.clone(), cell.style, true));
+            return Ok(Converted {
+                value: cell.value.clone(),
+                own_style: cell.style,
+                native: true,
+                link: cell.link.clone(),
+                comment: cell.comment.clone(),
+            });
         }
         if instance_of(obj, "DateTimeInterface") {
-            return Ok((date_value(obj, for_csv)?, None, false));
+            return Ok(date_value(obj, for_csv)?.into());
         }
         if instance_of(obj, "DateInterval") {
-            return Ok((interval_value(obj, for_csv)?, None, false));
+            return Ok(interval_value(obj, for_csv)?.into());
         }
         let class = obj.get_class_name().unwrap_or_default();
         return Err(writer_error(format!(
@@ -497,13 +660,17 @@ fn call_string(obj: &ZendObject, method: &str, arg: &str) -> PhpResult<String> {
         .ok_or_else(|| writer_error(format!("{method}() failed")))
 }
 
-/// DateHelper::toExcel from the wall-clock fields, plus DATE_ATOM for CSV.
-fn date_value(obj: &ZendObject, for_csv: bool) -> PhpResult<Value> {
+/// The wall-clock fields of a DateTimeInterface: year, month, day, hour, minute, second.
+fn date_fields(obj: &ZendObject) -> PhpResult<[i64; 6]> {
     let fields = call_string(obj, "format", "Y n j G i s")?;
     let n: Vec<i64> = fields.split(' ').map(|p| p.parse().unwrap_or(0)).collect();
-    let [y, m, d, h, i, s] = n[..] else {
-        return Err(writer_error("unexpected date format"));
-    };
+    n.try_into()
+        .map_err(|_| writer_error("unexpected date format"))
+}
+
+/// DateHelper::toExcel from the wall-clock fields, plus DATE_ATOM for CSV.
+fn date_value(obj: &ZendObject, for_csv: bool) -> PhpResult<Value> {
+    let [y, m, d, h, i, s] = date_fields(obj)?;
     Ok(Value::Date {
         serial: excel_serial(y, m, d, h, i, s),
         has_time: h != 0 || i != 0 || s != 0,
@@ -536,7 +703,7 @@ fn interval_value(obj: &ZendObject, for_csv: bool) -> PhpResult<Value> {
 }
 
 /// A style array: bold, italic, underline, strikethrough, size, color, font,
-/// background, format, align, valign, wrap, rotation, shrink.
+/// background, format, align, valign, wrap, rotation, shrink, border.
 fn parse_style(arr: &ZendHashTable) -> PhpResult<Style> {
     let mut st = Style::default();
     for (key, value) in arr.iter() {
@@ -593,15 +760,402 @@ fn parse_style(arr: &ZendHashTable) -> PhpResult<Style> {
             "wrap" => st.wrap_text = Some(boolean()?),
             "rotation" => st.text_rotation = int()?,
             "shrink" => st.shrink_to_fit = Some(boolean()?),
+            "border" => {
+                st.border = Some(parse_border(
+                    v.array()
+                        .filter(|_| v.is_array())
+                        .ok_or_else(|| invalid_option(&name, "expected an array"))?,
+                )?)
+            }
             _ => {
                 return Err(invalid_option(
                     &name,
-                    "unknown style key; known: bold, italic, underline, strikethrough, size, color, font, background, format, align, valign, wrap, rotation, shrink",
+                    "unknown style key; known: bold, italic, underline, strikethrough, size, color, font, background, format, align, valign, wrap, rotation, shrink, border",
                 ));
             }
         }
     }
     Ok(st)
+}
+
+/// `['top' => ['style' => 'solid', 'width' => 'thin', 'color' => 'RRGGBB'], …]`.
+/// Sides: top, right, bottom, left, or `all` (left, right, top, bottom). Each part
+/// defaults to OpenSpout's: solid, medium, black. Parts keep the order given, which
+/// decides whether two styles share a border entry, as in OpenSpout.
+fn parse_border(arr: &ZendHashTable) -> PhpResult<Border> {
+    let mut border = Border::default();
+    for (key, value) in arr.iter() {
+        let side = key.to_string();
+        let name = format!("style.border.{side}");
+        let sides: &[BorderSide] = match side.as_str() {
+            "top" => &[BorderSide::Top],
+            "right" => &[BorderSide::Right],
+            "bottom" => &[BorderSide::Bottom],
+            "left" => &[BorderSide::Left],
+            "all" => &BorderSide::ALL,
+            _ => {
+                return Err(invalid_option(
+                    &name,
+                    "unknown side; known: top, right, bottom, left, all",
+                ));
+            }
+        };
+        let v = value.dereference();
+        let spec = v
+            .array()
+            .filter(|_| v.is_array())
+            .ok_or_else(|| invalid_option(&name, "expected an array"))?;
+        let mut part = BorderPart::new(BorderSide::Top);
+        for (k, pv) in spec.iter() {
+            let k = k.to_string();
+            let pname = format!("{name}.{k}");
+            let pv = pv.dereference();
+            let text = pv
+                .string()
+                .filter(|_| pv.is_string())
+                .ok_or_else(|| invalid_option(&pname, "expected a string"))?;
+            match k.as_str() {
+                "color" => part.color = text,
+                "style" => {
+                    part.line = match text.as_str() {
+                        "none" => BorderLine::None,
+                        "solid" => BorderLine::Solid,
+                        "dashed" => BorderLine::Dashed,
+                        "dotted" => BorderLine::Dotted,
+                        "double" => BorderLine::Double,
+                        "hair" => BorderLine::Hair,
+                        other => {
+                            return Err(invalid_option(
+                                &pname,
+                                &format!(
+                                    "'{other}' is not one of: none, solid, dashed, dotted, double, hair"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                "width" => {
+                    part.width = match text.as_str() {
+                        "thin" => BorderWidth::Thin,
+                        "medium" => BorderWidth::Medium,
+                        "thick" => BorderWidth::Thick,
+                        other => {
+                            return Err(invalid_option(
+                                &pname,
+                                &format!("'{other}' is not one of: thin, medium, thick"),
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(invalid_option(
+                        &pname,
+                        "unknown border key; known: style, width, color",
+                    ));
+                }
+            }
+        }
+        for &s in sides {
+            border = border.with(BorderPart {
+                side: s,
+                ..part.clone()
+            });
+        }
+    }
+    Ok(border)
+}
+
+/// A comment: a string (one run in OpenSpout's defaults) or
+/// `['text' | 'runs' => …, 'visible', 'width', 'height', 'fill', 'marginLeft', 'marginTop']`.
+fn parse_comment(z: Option<&Zval>) -> PhpResult<Option<Comment>> {
+    let Some(z) = z.map(Zval::dereference).filter(|z| !z.is_null()) else {
+        return Ok(None);
+    };
+    if let Some(text) = z.string().filter(|_| z.is_string()) {
+        return Ok(Some(Comment {
+            runs: vec![TextRun::plain(&text)],
+            ..Comment::default()
+        }));
+    }
+    let arr = z
+        .array()
+        .filter(|_| z.is_array())
+        .ok_or_else(|| invalid_option("comment", "expected a string or an array"))?;
+    let mut c = Comment::default();
+    for (key, value) in arr.iter() {
+        let key = key.to_string();
+        let name = format!("comment.{key}");
+        let v = value.dereference();
+        let string = || {
+            v.string()
+                .filter(|_| v.is_string())
+                .ok_or_else(|| invalid_option(&name, "expected a string"))
+        };
+        match key.as_str() {
+            "text" => c.runs = vec![TextRun::plain(&string()?)],
+            "runs" => {
+                let runs = v
+                    .array()
+                    .filter(|_| v.is_array())
+                    .ok_or_else(|| invalid_option(&name, "expected a list of runs"))?;
+                c.runs = runs.values().map(parse_run).collect::<PhpResult<_>>()?;
+            }
+            "visible" => {
+                c.visible = v
+                    .bool()
+                    .filter(|_| v.is_bool())
+                    .ok_or_else(|| invalid_option(&name, "expected a bool"))?
+            }
+            "width" => c.width = string()?,
+            "height" => c.height = string()?,
+            "fill" => c.fill = string()?,
+            "marginLeft" => c.margin_left = string()?,
+            "marginTop" => c.margin_top = string()?,
+            _ => {
+                return Err(invalid_option(
+                    &name,
+                    "unknown comment key; known: text, runs, visible, width, height, fill, marginLeft, marginTop",
+                ));
+            }
+        }
+    }
+    Ok(Some(c))
+}
+
+/// `['text' => …, 'bold', 'italic', 'size', 'color', 'font']`.
+fn parse_run(z: &Zval) -> PhpResult<TextRun> {
+    let z = z.dereference();
+    let arr = z
+        .array()
+        .filter(|_| z.is_array())
+        .ok_or_else(|| invalid_option("comment.runs", "each run must be an array"))?;
+    let mut run = TextRun::plain("");
+    let mut has_text = false;
+    for (key, value) in arr.iter() {
+        let key = key.to_string();
+        let name = format!("comment.runs.{key}");
+        let v = value.dereference();
+        let string = || {
+            v.string()
+                .filter(|_| v.is_string())
+                .ok_or_else(|| invalid_option(&name, "expected a string"))
+        };
+        let boolean = || {
+            v.bool()
+                .filter(|_| v.is_bool())
+                .ok_or_else(|| invalid_option(&name, "expected a bool"))
+        };
+        match key.as_str() {
+            "text" => {
+                run.text = string()?;
+                has_text = true;
+            }
+            "bold" => run.bold = boolean()?,
+            "italic" => run.italic = boolean()?,
+            "size" => {
+                run.size = v
+                    .long()
+                    .filter(|_| v.is_long())
+                    .ok_or_else(|| invalid_option(&name, "expected an int"))?
+            }
+            "color" => run.color = string()?,
+            "font" => run.font = string()?,
+            _ => {
+                return Err(invalid_option(
+                    &name,
+                    "unknown run key; known: text, bold, italic, size, color, font",
+                ));
+            }
+        }
+    }
+    if !has_text {
+        return Err(invalid_option("comment.runs", "each run needs a text"));
+    }
+    Ok(run)
+}
+
+/// `addValidation()`'s rule array. Values are serialised as OpenSpout does: numbers
+/// through PHP's `strval()`, dates as Excel serials, times as day fractions.
+fn parse_validation(arr: &ZendHashTable) -> PhpResult<Validation> {
+    let mut kind = None;
+    let mut values = None;
+    let mut source = None;
+    let mut operator = None;
+    let (mut value1, mut value2) = (None, None);
+    let mut formula = None;
+    let mut v = Validation {
+        kind: String::new(),
+        operator: None,
+        formula1: Formula::Text(String::new()),
+        formula2: None,
+        allow_blank: true,
+        show_input_message: true,
+        show_error_message: true,
+        error_style: "stop".into(),
+        prompt_title: None,
+        prompt: None,
+        error_title: None,
+        error: None,
+    };
+    for (key, value) in arr.iter() {
+        let key = key.to_string();
+        let name = format!("rule.{key}");
+        let z = value.dereference();
+        let string = || {
+            z.string()
+                .filter(|_| z.is_string())
+                .ok_or_else(|| invalid_option(&name, "expected a string"))
+        };
+        let boolean = || {
+            z.bool()
+                .filter(|_| z.is_bool())
+                .ok_or_else(|| invalid_option(&name, "expected a bool"))
+        };
+        match key.as_str() {
+            "type" => kind = Some(string()?),
+            "values" => {
+                let list = z
+                    .array()
+                    .filter(|_| z.is_array())
+                    .ok_or_else(|| invalid_option(&name, "expected a list of strings"))?;
+                values = Some(
+                    list.values()
+                        .map(|x| {
+                            let x = x.dereference();
+                            x.string()
+                                .filter(|_| x.is_string())
+                                .ok_or_else(|| invalid_option(&name, "expected a list of strings"))
+                        })
+                        .collect::<PhpResult<Vec<_>>>()?,
+                );
+            }
+            "source" => source = Some(string()?),
+            "operator" => operator = Some(string()?),
+            "value1" => value1 = Some(z),
+            "value2" => value2 = Some(z),
+            "formula" => formula = Some(string()?),
+            "allowBlank" => v.allow_blank = boolean()?,
+            "showInputMessage" => v.show_input_message = boolean()?,
+            "showErrorMessage" => v.show_error_message = boolean()?,
+            "errorStyle" => v.error_style = string()?,
+            "promptTitle" => v.prompt_title = Some(string()?),
+            "prompt" => v.prompt = Some(string()?),
+            "errorTitle" => v.error_title = Some(string()?),
+            "error" => v.error = Some(string()?),
+            _ => {
+                return Err(invalid_option(
+                    &name,
+                    "unknown rule key; known: type, values, source, operator, value1, value2, formula, allowBlank, showInputMessage, showErrorMessage, errorStyle, promptTitle, prompt, errorTitle, error",
+                ));
+            }
+        }
+    }
+    let kind = kind.ok_or_else(|| invalid_option("rule.type", "is required"))?;
+    match kind.as_str() {
+        "list" => {
+            v.formula1 = match (values, source) {
+                (Some(values), None) => Formula::List(values),
+                (None, Some(source)) => Formula::Text(strip_equals(&source)),
+                _ => {
+                    return Err(invalid_option(
+                        "rule",
+                        "a list needs either 'values' or 'source'",
+                    ));
+                }
+            };
+        }
+        "custom" => {
+            let f = formula
+                .ok_or_else(|| invalid_option("rule.formula", "is required for 'custom'"))?;
+            v.formula1 = Formula::Text(strip_equals(&f));
+        }
+        _ => {
+            v.operator = Some(
+                operator
+                    .ok_or_else(|| invalid_option("rule.operator", "is required for this type"))?,
+            );
+            let time = kind == "time";
+            v.formula1 = validation_value(
+                value1.ok_or_else(|| invalid_option("rule.value1", "is required for this type"))?,
+                time,
+            )?;
+            v.formula2 = value2.map(|z| validation_value(z, time)).transpose()?;
+        }
+    }
+    v.kind = kind;
+    Ok(v)
+}
+
+/// A rule value: a number (PHP's `strval()`), a date (its serial) or time (its day
+/// fraction) as OpenSpout serialises them, or a formula string.
+fn validation_value(z: &Zval, time: bool) -> PhpResult<Formula> {
+    let number = |f: f64| -> PhpResult<Formula> {
+        let mut zv = Zval::new();
+        zv.set_double(f);
+        Ok(Formula::Text(php_strval(&zv)?))
+    };
+    if z.is_long() || z.is_double() {
+        return Ok(Formula::Text(php_strval(z)?));
+    }
+    if let Some(s) = z.string().filter(|_| z.is_string()) {
+        return Ok(Formula::Text(strip_equals(&s)));
+    }
+    if let Some(obj) = z.object().filter(|o| instance_of(o, "DateTimeInterface")) {
+        let [y, m, d, h, i, s] = date_fields(obj)?;
+        return number(if time {
+            // OpenSpout's TimeOfDay::toDayFraction.
+            (h * 3600 + i * 60 + s) as f64 / 86_400.0
+        } else {
+            excel_serial(y, m, d, h, i, s)
+        });
+    }
+    Err(invalid_option(
+        "rule.value",
+        "expected an int, a float, a DateTimeInterface or a formula string",
+    ))
+}
+
+fn strip_equals(s: &str) -> String {
+    s.strip_prefix('=').unwrap_or(s).to_string()
+}
+
+/// `addTable()`'s options.
+fn parse_table_options(arr: Option<&ZendHashTable>) -> PhpResult<TableOptions> {
+    let mut o = TableOptions::default();
+    let Some(arr) = arr else {
+        return Ok(o);
+    };
+    for (key, value) in arr.iter() {
+        let key = key.to_string();
+        let name = format!("options.{key}");
+        let v = value.dereference();
+        let boolean = || {
+            v.bool()
+                .filter(|_| v.is_bool())
+                .ok_or_else(|| invalid_option(&name, "expected a bool"))
+        };
+        match key.as_str() {
+            "style" => {
+                o.style = v
+                    .string()
+                    .filter(|_| v.is_string())
+                    .ok_or_else(|| invalid_option(&name, "expected a string"))?
+            }
+            "headerRow" => o.header_row = boolean()?,
+            "filter" => o.filter = boolean()?,
+            "rowStripes" => o.row_stripes = boolean()?,
+            "columnStripes" => o.column_stripes = boolean()?,
+            "firstColumn" => o.first_column = boolean()?,
+            "lastColumn" => o.last_column = boolean()?,
+            _ => {
+                return Err(invalid_option(
+                    &name,
+                    "unknown table option; known: style, headerRow, filter, rowStripes, columnStripes, firstColumn, lastColumn",
+                ));
+            }
+        }
+    }
+    Ok(o)
 }
 
 /// OpenSpout's CellAlignment / CellVerticalAlignment enums (`::from()` throws on others).
@@ -618,6 +1172,8 @@ fn enum_value(name: &str, value: String, allowed: &[&str]) -> PhpResult<String> 
 
 struct WriterOptions {
     format: Option<String>,
+    /// Where auto-sized sheets buffer their rows.
+    temp_dir: Option<String>,
     date_format: String,
     datetime_format: String,
     csv: CsvWriterOptions,
@@ -628,6 +1184,7 @@ impl WriterOptions {
     fn parse(arr: Option<&ZendHashTable>) -> PhpResult<Self> {
         let mut o = WriterOptions {
             format: None,
+            temp_dir: None,
             date_format: "yyyy-mm-dd".into(),
             datetime_format: "yyyy-mm-dd hh:mm:ss".into(),
             csv: CsvWriterOptions::default(),
@@ -648,6 +1205,13 @@ impl WriterOptions {
                 "format" => o.format = Some(string("format")?.to_lowercase()),
                 "date_format" => o.date_format = string("date_format")?,
                 "datetime_format" => o.datetime_format = string("datetime_format")?,
+                "temp_dir" => {
+                    let dir = string("temp_dir")?;
+                    if !Path::new(&dir).is_dir() {
+                        return Err(invalid_option("temp_dir", "not a directory"));
+                    }
+                    o.temp_dir = Some(dir);
+                }
                 "csv" => {
                     let csv = v
                         .array()
@@ -694,7 +1258,7 @@ impl WriterOptions {
                 other => {
                     return Err(invalid_option(
                         other,
-                        "unknown option; known: format, date_format, datetime_format, csv",
+                        "unknown option; known: format, date_format, datetime_format, temp_dir, csv",
                     ));
                 }
             }
