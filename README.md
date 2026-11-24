@@ -118,7 +118,7 @@ Values and files match OpenSpout's except for these deliberate differences:
 | `fuzz/` | `cargo fuzz` targets (sheet, shared strings, styles, CSV, whole XLSX) |
 | `coverage/` | Coverage baseline (the ratchet) and the explained exclusions |
 | `scripts/` | `coverage.sh`, `fuzz.sh`, `gate.sh`, `release-build.sh` |
-| `.github/workflows` | CI (lint, tests, coverage, fuzzing) and the release build for PIE |
+| `.github/workflows` | CI (lint, tests, coverage), nightly fuzzing and macOS tests, and the release build for PIE |
 
 Prerequisites: Rust via [rustup](https://rustup.rs) (`clippy`, `rustfmt`), PHP 8.4+ with
 `php-config`, Composer, and on macOS the Xcode Command Line Tools (if the build can't find

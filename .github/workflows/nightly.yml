@@ -1,0 +1,41 @@
+# Long-running checks that would slow every pull request: fuzzing for minutes per
+# target, and the macOS suite. Scheduled runs use the default branch (main).
+name: Nightly
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: Seconds to fuzz each target
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz (${{ inputs.fuzz_seconds || '300' }} s per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Fuzz
+        run: FUZZ_SECONDS=${{ inputs.fuzz_seconds || '300' }} ./scripts/fuzz.sh
+      - name: Crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
+  macos:
+    name: macOS
+    uses: ./.github/workflows/macos.yml
