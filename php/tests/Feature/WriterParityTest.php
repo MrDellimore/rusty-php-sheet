@@ -160,6 +160,40 @@ function writer_scenarios(): array
         ['merge', 'A1:B1'],
     ];
 
+    // Phase 9: data validation and comments (both OpenSpout features).
+    $forms = [
+        ['sheet', 'Form'],
+        ['validation', 'B2:B20', ['type' => 'list', 'values' => ['Yes', 'No', 'Maybe & <co>'], 'errorTitle' => 'Invalid selection', 'error' => 'Please choose one of the listed options.', 'prompt' => 'Pick one']],
+        ['validation', 'C2:C20', ['type' => 'list', 'source' => 'Lists!$A$1:$A$3', 'allowBlank' => false]],
+        ['validation', 'D2:D20', ['type' => 'list', 'source' => "'My lists'!\$A\$1:\$A\$3", 'showInputMessage' => false]],
+        ['validation', 'E2:E20', ['type' => 'whole', 'operator' => 'between', 'value1' => 1, 'value2' => 10, 'errorStyle' => 'warning']],
+        ['validation', 'F2:F20', ['type' => 'decimal', 'operator' => 'greaterThan', 'value1' => 0.5, 'errorStyle' => 'information', 'showErrorMessage' => false]],
+        ['validation', 'G2:G20', ['type' => 'date', 'operator' => 'greaterThanOrEqual', 'value1' => new DateTimeImmutable('2020-01-01')]],
+        ['validation', 'H2:H20', ['type' => 'date', 'operator' => 'notBetween', 'value1' => new DateTimeImmutable('2025-06-15 14:30'), 'value2' => new DateTimeImmutable('2025-12-31 23:59:59')]],
+        ['validation', 'I2:I20', ['type' => 'time', 'operator' => 'lessThan', 'value1' => new DateTimeImmutable('1970-01-01 14:30:15')]],
+        ['validation', 'J2:J20', ['type' => 'textLength', 'operator' => 'lessThanOrEqual', 'value1' => 50, 'promptTitle' => 'Short', 'prompt' => 'At most 50 characters']],
+        ['validation', 'K2:K20', ['type' => 'custom', 'formula' => 'AND(ISNUMBER(SEARCH("x",K2)),LEN(K2)<5)']],
+        ['validation', 'L2:L2', ['type' => 'whole', 'operator' => 'equal', 'value1' => 7]],
+        ['validation', 'M2:M20', ['type' => 'decimal', 'operator' => 'notEqual', 'value1' => 0, 'errorStyle' => 'stop']],
+        ['row', ['Name', 'Answer', 'From list', 'From other', 'Count', 'Ratio', 'Since', 'Not in', 'Before', 'Note', 'Has x', 'Seven']],
+        ['row', [
+            ['cell' => 'Ann', 'comment' => 'A plain note'],
+            ['cell' => 'Yes', 'comment' => ['runs' => [
+                ['text' => 'Reviewer: ', 'bold' => true],
+                ['text' => 'checked <twice> & signed', 'italic' => true, 'size' => 12, 'color' => 'FF0000', 'font' => 'Calibri'],
+            ]]],
+            ['cell' => null, 'comment' => ['text' => 'on an empty cell', 'visible' => true, 'width' => '150pt', 'height' => '40pt', 'fill' => '#E2EFDA', 'marginLeft' => '10pt', 'marginTop' => '2pt']],
+            'x',
+        ]],
+        ['row', [null, null], null, [], null], // an empty row: no comments from it
+        ['sheet', 'Lists'],
+        ['validation', 'B1:B3', ['type' => 'list', 'values' => ['a', 'b']]],
+        ['row', ['one', ['cell' => 'two', 'comment' => 'second sheet: shape ids carry on']]],
+        ['row', ['three']],
+        ['sheet', 'My lists'],
+        ['row', ['x']],
+    ];
+
     return [
         'kitchen sink' => $sink,
         'value types' => $types,
@@ -168,6 +202,7 @@ function writer_scenarios(): array
         '3000 mixed rows' => $big,
         'banner report' => $banner,
         'links between sheets' => $links,
+        'validations and comments' => $forms,
     ];
 }
 

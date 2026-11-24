@@ -6,6 +6,8 @@ namespace RustySheet\Dev;
 
 use DateTimeInterface;
 use OpenSpout\Common\Entity\Cell;
+use OpenSpout\Common\Entity\Comment\Comment;
+use OpenSpout\Common\Entity\Comment\TextRun;
 use OpenSpout\Common\Entity\Hyperlink;
 use OpenSpout\Common\Entity\Row;
 use OpenSpout\Common\Entity\Style\Border;
@@ -23,6 +25,12 @@ use OpenSpout\Writer\CSV\Writer as CsvWriter;
 use OpenSpout\Writer\WriterInterface;
 use OpenSpout\Writer\XLSX\Entity\SheetView;
 use OpenSpout\Writer\XLSX\Options as XlsxOptions;
+use OpenSpout\Writer\XLSX\Validation\CellReference;
+use OpenSpout\Writer\XLSX\Validation\DataValidationRuleInterface;
+use OpenSpout\Writer\XLSX\Validation\ErrorStyle;
+use OpenSpout\Writer\XLSX\Validation\Rules;
+use OpenSpout\Writer\XLSX\Validation\ValidationDisplay;
+use OpenSpout\Writer\XLSX\Validation\ValidationOperator;
 use OpenSpout\Writer\XLSX\Writer as XlsxWriter;
 use RustySheet\Writer;
 
@@ -37,9 +45,11 @@ use RustySheet\Writer;
  *   ['row', values, ?rowStyle, [col => style], ?height]
  *   ['merge', 'A1:C1']                     merged cells on the current sheet
  *   ['autofilter', 'A1:C10']               autofilter on the current sheet (before rows)
+ *   ['validation', 'B2:B9', rule]          data validation (Writer::addValidation's rule array)
  * Values are plain PHP values, or ['cell' => value, 'style' => name] for a cell with
  * its own style, ['text' => string] for text that is never a formula, or
  * ['link' => text, 'target' => url or #place or sheet://place, 'tooltip' => ?, 'style' => ?].
+ * A 'cell' value may carry a 'comment' (Writer::cell's comment spec).
  * Styles are referenced by name; one name is one style object (OpenSpout keys
  * styles by object identity).
  *
@@ -93,6 +103,11 @@ final class WriterParity
                 if ($op[0] === 'merge') {
                     [$c1, $r1, $c2, $r2] = self::bounds($op[1]);
                     $options->mergeCells($c1, $r1, $c2, $r2, $sheetIndex);
+                }
+                if ($op[0] === 'validation') {
+                    [$c1, $r1, $c2, $r2] = self::bounds($op[1]);
+                    [$rule, $display] = self::openSpoutValidation($op[2]);
+                    $options->addValidation($c1, $r1, $c2, $r2, $rule, $display, $sheetIndex);
                 }
             }
             $writer = new XlsxWriter($options);
@@ -149,7 +164,8 @@ final class WriterParity
                         $colStyle = isset($colStyles[$i]) ? $objects[$colStyles[$i]] : $style;
                         if (is_array($value) && array_key_exists('cell', $value)) {
                             $own = isset($value['style']) ? $objects[$value['style']] : null;
-                            $cells[] = Cell::fromValue($value['cell'], $own);
+                            $comment = isset($value['comment']) ? self::openSpoutComment($value['comment']) : null;
+                            $cells[] = Cell::fromValue($value['cell'], $own, $comment);
                         } elseif (is_array($value) && array_key_exists('text', $value)) {
                             $own = isset($value['style']) ? $objects[$value['style']] : null;
                             $cells[] = new Cell\StringCell($value['text'], $own);
@@ -225,11 +241,14 @@ final class WriterParity
                 case 'autofilter':
                     $writer->setAutoFilter($op[1]);
                     break;
+                case 'validation':
+                    $writer->addValidation($op[1], $op[2]);
+                    break;
                 case 'row':
                     [, $values, $rowStyle, $colStyles, $height] = $op + [2 => null, 3 => [], 4 => null];
                     $mapped = array_map(function ($value) use ($id) {
                         if (is_array($value) && array_key_exists('cell', $value)) {
-                            return Writer::cell($value['cell'], $id($value['style'] ?? null));
+                            return Writer::cell($value['cell'], $id($value['style'] ?? null), $value['comment'] ?? null);
                         }
                         if (is_array($value) && array_key_exists('text', $value)) {
                             return Writer::text($value['text'], $id($value['style'] ?? null));
@@ -303,10 +322,16 @@ final class WriterParity
         $parts = [];
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $name = $zip->getNameIndex($i);
-            if (! preg_match('#^xl/(workbook\.xml|styles\.xml|worksheets/sheet\d+\.xml|worksheets/_rels/sheet\d+\.xml\.rels)$#', $name)) {
+            if (! preg_match('#^xl/(workbook\.xml|styles\.xml|worksheets/sheet\d+\.xml|worksheets/_rels/sheet\d+\.xml\.rels|comments\d+\.xml|drawings/vmlDrawing\d+\.vml)$#', $name)) {
                 continue;
             }
             $xml = $zip->getFromIndex($i);
+            // OpenSpout writes empty comment parts for every sheet; the extension
+            // only for sheets with comments.
+            if ((str_contains($name, 'comments') && ! str_contains($xml, '<comment '))
+                || (str_contains($name, 'vmlDrawing') && ! str_contains($xml, '<v:shape '))) {
+                continue;
+            }
             if (str_ends_with($name, '.rels')) {
                 // OpenSpout always relates its (empty) comments and VML parts; the
                 // extension writes a .rels part only for links to URLs.
@@ -341,6 +366,65 @@ final class WriterParity
         };
 
         return [$col($m[1]), (int) $m[2], $col($m[3]), (int) $m[4]];
+    }
+
+    /** Writer::cell's comment spec → an OpenSpout Comment. */
+    private static function openSpoutComment(string|array $spec): Comment
+    {
+        if (is_string($spec)) {
+            $spec = ['text' => $spec];
+        }
+        $runs = isset($spec['runs'])
+            ? array_map(fn (array $r) => new TextRun($r['text'], $r['size'] ?? 10, $r['color'] ?? '000000', $r['font'] ?? 'Tahoma', $r['bold'] ?? false, $r['italic'] ?? false), $spec['runs'])
+            : [new TextRun($spec['text'] ?? '')];
+
+        return new Comment(
+            height: $spec['height'] ?? Comment::DEFAULT_HEIGHT,
+            width: $spec['width'] ?? Comment::DEFAULT_WIDTH,
+            marginLeft: $spec['marginLeft'] ?? Comment::DEFAULT_MARGIN_LEFT,
+            marginTop: $spec['marginTop'] ?? Comment::DEFAULT_MARGIN_TOP,
+            visible: $spec['visible'] ?? false,
+            fillColor: $spec['fill'] ?? Comment::DEFAULT_FILL_COLOR,
+            textRuns: $runs,
+        );
+    }
+
+    /**
+     * Writer::addValidation's rule array → OpenSpout's rule and display.
+     *
+     * @return array{DataValidationRuleInterface, ValidationDisplay}
+     */
+    private static function openSpoutValidation(array $r): array
+    {
+        $op = isset($r['operator']) ? ValidationOperator::from($r['operator']) : null;
+        $time = static fn (?DateTimeInterface $t) => $t === null ? null : new Rules\TimeOfDay((int) $t->format('G'), (int) $t->format('i'), (int) $t->format('s'));
+        $ref = static function (string $source): CellReference {
+            [$sheet, $range] = str_contains($source, '!') ? explode('!', $source, 2) : [null, $source];
+            [$c1, $r1, $c2, $r2] = self::bounds($range);
+
+            return new CellReference($c1, $r1, $c2, $r2, str_contains($range, '$'), $sheet === null ? null : trim($sheet, "'"));
+        };
+        $rule = match ($r['type']) {
+            'list' => new Rules\ListValidationRule(isset($r['source']) ? $ref($r['source']) : $r['values']),
+            'whole' => new Rules\WholeNumberValidationRule($op, $r['value1'], $r['value2'] ?? null),
+            'decimal' => new Rules\DecimalValidationRule($op, (float) $r['value1'], isset($r['value2']) ? (float) $r['value2'] : null),
+            'date' => new Rules\DateValidationRule($op, $r['value1'], $r['value2'] ?? null),
+            'time' => new Rules\TimeValidationRule($op, $time($r['value1']), $time($r['value2'] ?? null)),
+            'textLength' => new Rules\TextLengthValidationRule($op, $r['value1'], $r['value2'] ?? null),
+            'custom' => new Rules\CustomValidationRule($r['formula']),
+        };
+        $display = new ValidationDisplay(
+            $r['allowBlank'] ?? true,
+            $r['showInputMessage'] ?? true,
+            $r['showErrorMessage'] ?? true,
+            ErrorStyle::from($r['errorStyle'] ?? 'stop'),
+            $r['promptTitle'] ?? null,
+            $r['prompt'] ?? null,
+            $r['errorTitle'] ?? null,
+            $r['error'] ?? null,
+        );
+
+        return [$rule, $display];
     }
 
     /** ['top' => ['style' => 'dashed', 'width' => 'thin', 'color' => 'FF0000'], 'all' => …] */

@@ -142,6 +142,63 @@ final class Writer
     public function showGridLines(bool $show): void {}
 
     /**
+     * Data validation on a range of the current sheet, any time before the sheet ends.
+     * Written like OpenSpout 5.15's Options::addValidation(), in call order.
+     *
+     * - 'list': `values` (written inline, at most 255 characters together, no commas in a
+     *   value) or `source` (a range or formula such as "Lists!$A$1:$A$9").
+     * - 'whole', 'decimal', 'date', 'time', 'textLength': `operator`, `value1` and, for
+     *   between / notBetween, `value2`. Values are numbers, DateTimeInterface (dates as
+     *   serials, times as day fractions), or a formula string such as 'DATE(1900,1,1)'
+     *   (beyond OpenSpout, for PhpSpreadsheet-style rules).
+     * - 'custom': `formula`.
+     *
+     * @param array{
+     *   type: 'list'|'whole'|'decimal'|'date'|'time'|'textLength'|'custom',
+     *   values?: list<string>,
+     *   source?: string,
+     *   operator?: 'between'|'notBetween'|'equal'|'notEqual'|'greaterThan'|'lessThan'|'greaterThanOrEqual'|'lessThanOrEqual',
+     *   value1?: int|float|string|\DateTimeInterface,
+     *   value2?: int|float|string|\DateTimeInterface,
+     *   formula?: string,
+     *   allowBlank?: bool,
+     *   showInputMessage?: bool,
+     *   showErrorMessage?: bool,
+     *   errorStyle?: 'stop'|'warning'|'information',
+     *   promptTitle?: string,
+     *   prompt?: string,
+     *   errorTitle?: string,
+     *   error?: string,
+     * } $rule  allowBlank, showInputMessage and showErrorMessage default to true
+     *
+     * @throws \ValueError An invalid range or rule.
+     */
+    public function addValidation(string $range, array $rule): void {}
+
+    /**
+     * An Excel table (ListObject) on a range of the current sheet, like PhpSpreadsheet's
+     * Worksheet::addTable() (beyond OpenSpout). Call it before the table's header row is
+     * written: the column names are taken from that row (an empty cell gets "ColumnN",
+     * a repeated name a number). Needs at least one row below the header.
+     *
+     * @param array{
+     *   style?: string,         // 'TableStyleMedium2' (default), 'TableStyleNone', …
+     *   headerRow?: bool,       // default true
+     *   filter?: bool,          // dropdowns on the header row; default true
+     *   rowStripes?: bool,      // default false
+     *   columnStripes?: bool,   // default false
+     *   firstColumn?: bool,     // default false
+     *   lastColumn?: bool,      // default false
+     * } $options
+     *
+     * @throws \ValueError     An invalid range or name (letters, digits, _ and ., starting
+     *                         with a letter, _ or \; not a cell reference; unique in the
+     *                         workbook), or overlapping another table, the autofilter or a merge.
+     * @throws WriterException After the table's header row has been written.
+     */
+    public function addTable(string $range, string $name, array $options = []): void {}
+
+    /**
      * Size columns to their content, like PhpSpreadsheet's auto-size (its default,
      * approximate mode): each cell's text as its number format shows it, counted in
      * characters (wide East Asian characters twice), scaled for the cell's font and size,
@@ -210,11 +267,26 @@ final class Writer
      */
     public function addRow(array $values, ?int $rowStyle = null, array $columnStyles = [], ?float $height = null): void {}
 
-    /** A value with its own style, used as is (no column/row style, no date style). */
-    public static function cell(mixed $value, ?int $style = null): Cell {}
+    /**
+     * A value with its own style, used as is (no column/row style, no date style), and
+     * optionally a comment (a note), written like OpenSpout's cell comments.
+     *
+     * @param string|array{
+     *   text?: string,
+     *   runs?: list<array{text: string, bold?: bool, italic?: bool, size?: int, color?: string, font?: string}>,
+     *   visible?: bool,
+     *   width?: string,
+     *   height?: string,
+     *   fill?: string,
+     *   marginLeft?: string,
+     *   marginTop?: string,
+     * }|null $comment  a string is one run in OpenSpout's defaults (Tahoma 10, black);
+     *                  box defaults: hidden, 96pt × 55.5pt, '#FFFFE1'
+     */
+    public static function cell(mixed $value, ?int $style = null, string|array|null $comment = null): Cell {}
 
     /** A string that is never treated as a formula ('' is written as an empty string). */
-    public static function text(string $value, ?int $style = null): Cell {}
+    public static function text(string $value, ?int $style = null, string|array|null $comment = null): Cell {}
 
     /**
      * Text with a hyperlink. $target is a URL, '#Sheet!A1' / "#'My sheet'!A1" for a
@@ -223,7 +295,7 @@ final class Writer
      *
      * @throws \ValueError Empty target.
      */
-    public static function link(string $text, string $target, ?int $style = null, ?string $tooltip = null): Cell {}
+    public static function link(string $text, string $target, ?int $style = null, ?string $tooltip = null, string|array|null $comment = null): Cell {}
 
     /** Finish the file. Without it the file is incomplete. Closing twice is fine. */
     public function close(): void {}

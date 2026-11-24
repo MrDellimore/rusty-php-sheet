@@ -188,6 +188,33 @@ it('renders dates as PhpSpreadsheet does before measuring', function (string $fo
     'elapsed hours' => ['[h]:mm'],
 ]);
 
+it('leaves room for a table header\'s dropdowns as PhpSpreadsheet does', function () {
+    $rows = [['Claimant', 'Amount'], ['Ann', 12.5], ['Bob', 7]];
+    // PhpSpreadsheet: a table with a header row and filter buttons.
+    $book = new Spreadsheet();
+    $book->getDefaultStyle()->getFont()->setName('Calibri')->setSize(12);
+    $sheet = $book->getActiveSheet();
+    $sheet->fromArray($rows);
+    $sheet->addTable(new PhpOffice\PhpSpreadsheet\Worksheet\Table('A1:B3', 'T'));
+    foreach (['A', 'B'] as $c) {
+        $sheet->getColumnDimension($c)->setAutoSize(true);
+    }
+    $sheet->calculateColumnWidths();
+    $expected = ['A' => $sheet->getColumnDimension('A')->getWidth(), 'B' => $sheet->getColumnDimension('B')->getWidth()];
+
+    $path = sys_get_temp_dir().'/'.uniqid('rs_autosize_', true).'.xlsx';
+    $w = Writer::create($path);
+    $w->autoSizeColumns();
+    $w->addTable('A1:B3', 'T');
+    foreach ($rows as $r) {
+        $w->addRow($r);
+    }
+    $w->close();
+    $read = IOFactory::load($path)->getActiveSheet();
+    expect(['A' => $read->getColumnDimension('A')->getWidth(), 'B' => $read->getColumnDimension('B')->getWidth()])->toBe($expected);
+    unlink($path);
+});
+
 it('measures stacked text as PhpSpreadsheet does', function () {
     $rows = [[['a long header', ['rotation' => 255]], ['x', null]], [['also long text', ['rotation' => 255]], [true, null]]];
     expect(rusty_widths($rows, 'A1:B1', []))->toBe(phpspreadsheet_widths($rows, 'A1:B1', []));

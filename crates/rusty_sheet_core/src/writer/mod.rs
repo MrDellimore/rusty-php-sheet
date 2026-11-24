@@ -3,10 +3,12 @@
 pub mod autosize;
 pub mod csv;
 mod escape;
+pub mod sheet_parts;
 pub mod style;
 pub mod xlsx;
 
 pub use csv::{CsvWriter, CsvWriterOptions};
+pub use sheet_parts::{Comment, Formula, TableOptions, TextRun, Validation};
 pub use style::{Border, BorderLine, BorderPart, BorderSide, BorderWidth, Style};
 pub use xlsx::{Cell, CellData, CellRange, Link, MAX_COLUMNS, MAX_ROWS, XlsxWriter};
 

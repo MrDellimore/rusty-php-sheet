@@ -24,6 +24,10 @@ use zip::write::SimpleFileOptions;
 
 use super::autosize::{self, Measure};
 use super::escape::{escape, escape_into, truncate_for_cell};
+use super::sheet_parts::{
+    self, COMMENTS_FOOTER, COMMENTS_HEADER, Comment, Table, TableOptions, VML_FOOTER, VML_HEADER,
+    Validation,
+};
 use super::style::{Style, StyleRegistry};
 use crate::{Error, Result};
 
@@ -55,6 +59,8 @@ pub struct Cell<'a> {
     pub multiline: bool,
     /// A hyperlink. Only string cells can carry one (OpenSpout: `StringCell`).
     pub link: Option<Link<'a>>,
+    /// A comment (note). Written for any cell of a row that has a value.
+    pub comment: Option<&'a Comment>,
 }
 
 /// A hyperlink on a cell.
@@ -175,6 +181,15 @@ struct Sheet {
     link_rels: String,
     external_links: u32,
     auto_size: Option<AutoSize>,
+    /// In call order, as OpenSpout writes them.
+    validations: Vec<(CellRange, Validation)>,
+    /// `<comment>` elements and their VML shapes.
+    comments: String,
+    comment_shapes: String,
+    has_comments: bool,
+    tables: Vec<Table>,
+    /// Workbook-wide numbers of this sheet's tables, given when the sheet ends.
+    table_ids: Vec<u32>,
 }
 
 /// Auto-sized columns of a sheet and what has been measured so far.
@@ -256,6 +271,12 @@ pub struct XlsxWriter {
     closed: bool,
     /// Where auto-sized sheets buffer their rows.
     temp_dir: PathBuf,
+    /// The last comment shape id (OpenSpout counts from 1024 across the workbook).
+    shape_id: u32,
+    /// Tables so far, workbook-wide.
+    table_count: u32,
+    /// Lowercased table names, for uniqueness across the workbook.
+    table_names: Vec<String>,
 }
 
 impl XlsxWriter {
@@ -273,6 +294,9 @@ impl XlsxWriter {
             buf: String::with_capacity(16 * 1024),
             closed: false,
             temp_dir: std::env::temp_dir(),
+            shape_id: 1024,
+            table_count: 0,
+            table_names: Vec::new(),
         })
     }
 
@@ -409,6 +433,12 @@ impl XlsxWriter {
                 "can't merge {r}: it overlaps the merged range {other}"
             )));
         }
+        if let Some(t) = sheet.tables.iter().find(|t| t.range.overlaps(&r)) {
+            return Err(Error::InvalidArgument(format!(
+                "can't merge {r}: it overlaps the table {} ({}); tables can't contain merged cells",
+                t.name, t.range
+            )));
+        }
         sheet.merges.push(r);
         Ok(())
     }
@@ -417,7 +447,72 @@ impl XlsxWriter {
     /// the sheet header changes too (OpenSpout's `<sheetPr filterMode>`).
     pub fn set_auto_filter(&mut self, range: &str) -> Result<()> {
         let r = parse_range_arg(range)?;
-        self.current_before_rows("set an autofilter")?.auto_filter = Some(r);
+        let sheet = self.current_before_rows("set an autofilter")?;
+        if let Some(t) = sheet.tables.iter().find(|t| t.range.overlaps(&r)) {
+            return Err(Error::InvalidArgument(format!(
+                "the autofilter {r} overlaps the table {} ({}), which has its own filter",
+                t.name, t.range
+            )));
+        }
+        sheet.auto_filter = Some(r);
+        Ok(())
+    }
+
+    /// Data validation on a range of the current sheet, any time before it ends.
+    pub fn add_validation(&mut self, range: &str, rule: Validation) -> Result<()> {
+        let r = parse_range_arg(range)?;
+        rule.check()?;
+        self.sheets
+            .last_mut()
+            .expect("always one sheet")
+            .validations
+            .push((r, rule));
+        Ok(())
+    }
+
+    /// An Excel table on a range of the current sheet. Before its header row is
+    /// written, since the column names come from that row.
+    pub fn add_table(&mut self, range: &str, name: &str, options: TableOptions) -> Result<()> {
+        let r = parse_range_arg(range)?;
+        sheet_parts::check_table_name(name)?;
+        if self.table_names.contains(&name.to_lowercase()) {
+            return Err(Error::InvalidArgument(format!(
+                "a table named '{name}' already exists in the workbook"
+            )));
+        }
+        if options.header_row && r.first_row == r.last_row {
+            return Err(Error::InvalidArgument(format!(
+                "the table {r} has a header row and no row below it; Excel would remove it"
+            )));
+        }
+        let sheet = self.sheets.last_mut().expect("always one sheet");
+        if sheet.rows >= r.first_row {
+            return Err(invalid(&format!(
+                "can't add the table {r} after its first row ({}) has been written",
+                r.first_row
+            )));
+        }
+        let clash = |what: &str, other: &CellRange| {
+            Err(Error::InvalidArgument(format!(
+                "the table {r} overlaps {what} {other}"
+            )))
+        };
+        if let Some(t) = sheet.tables.iter().find(|t| t.range.overlaps(&r)) {
+            return clash(&format!("the table {}", t.name), &t.range);
+        }
+        if let Some(f) = sheet.auto_filter.filter(|f| f.overlaps(&r)) {
+            return clash("the autofilter", &f);
+        }
+        if let Some(m) = sheet.merges.iter().find(|m| m.overlaps(&r)) {
+            return clash("the merged range", m);
+        }
+        self.table_names.push(name.to_lowercase());
+        sheet.tables.push(Table {
+            range: r,
+            name: name.to_string(),
+            options,
+            headers: Vec::new(),
+        });
         Ok(())
     }
 
@@ -484,19 +579,45 @@ impl XlsxWriter {
                 }
                 _ => style_id,
             };
+            let sheet = self.sheets.last_mut().expect("always one sheet");
+            if let Some(comment) = cell.comment {
+                comment.comment_xml(&cell_ref(col, row_number), &mut sheet.comments);
+                self.shape_id += 1;
+                comment.vml(
+                    self.shape_id,
+                    row_number - 1,
+                    col as u32,
+                    &mut sheet.comment_shapes,
+                );
+                sheet.has_comments = true;
+            }
+            for t in sheet
+                .tables
+                .iter_mut()
+                .filter(|t| t.options.header_row && t.range.first_row == row_number)
+            {
+                if let Some(offset) = (col as u32).checked_sub(t.range.first_col)
+                    && col as u32 <= t.range.last_col
+                {
+                    let i = offset as usize;
+                    t.headers.resize(t.headers.len().max(i + 1), None);
+                    t.headers[i] = header_text(&cell.data);
+                }
+            }
             if matches!(cell.data, CellData::Empty)
                 && !self.registry.applies_to_empty_cell(style_id)
             {
                 continue;
             }
-            let sheet = self.sheets.last_mut().expect("always one sheet");
+            let filter_header =
+                sheet.auto_size.is_some() && is_filter_header(sheet, col as u32, row_number);
             if let Some(auto) = sheet.auto_size.as_mut().filter(|a| a.sizes(col))
                 && let Some(width) = measure(
                     &cell.data,
                     self.registry.style(style_id),
                     col as u32,
                     row_number,
-                    sheet.auto_filter.as_ref(),
+                    filter_header,
                     &sheet.merges,
                 )
             {
@@ -669,14 +790,68 @@ impl XlsxWriter {
             }
             s.push_str("</mergeCells>");
         }
+        if !sheet.validations.is_empty() {
+            let _ = write!(s, "<dataValidations count=\"{}\">", sheet.validations.len());
+            for (range, v) in std::mem::take(&mut sheet.validations) {
+                v.xml(&range, &mut s);
+            }
+            s.push_str("</dataValidations>");
+        }
         if !sheet.hyperlinks.is_empty() {
             s.push_str("<hyperlinks>");
             s.push_str(&std::mem::take(&mut sheet.hyperlinks));
             s.push_str("</hyperlinks>");
         }
+        let n = index + 1;
+        let mut rels = String::new();
+        if sheet.has_comments {
+            s.push_str("<legacyDrawing r:id=\"rId_comments_vml1\"/>");
+            let _ = writeln!(
+                rels,
+                "  <Relationship Id=\"rId_comments_vml1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing\" Target=\"../drawings/vmlDrawing{n}.vml\"/>"
+            );
+            let _ = writeln!(
+                rels,
+                "  <Relationship Id=\"rId_comments1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments\" Target=\"../comments{n}.xml\"/>"
+            );
+        }
+        rels.push_str(&std::mem::take(&mut sheet.link_rels));
+        let tables = std::mem::take(&mut sheet.tables);
+        let comments = std::mem::take(&mut sheet.comments);
+        let shapes = std::mem::take(&mut sheet.comment_shapes);
+        let mut table_ids = Vec::with_capacity(tables.len());
+        if !tables.is_empty() {
+            let _ = write!(s, "<tableParts count=\"{}\">", tables.len());
+            for _ in &tables {
+                self.table_count += 1;
+                let id = self.table_count;
+                table_ids.push(id);
+                let _ = write!(s, "<tablePart r:id=\"rIdTable{id}\"/>");
+                let _ = writeln!(
+                    rels,
+                    "  <Relationship Id=\"rIdTable{id}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/table\" Target=\"../tables/table{id}.xml\"/>"
+                );
+            }
+            s.push_str("</tableParts>");
+        }
         s.push_str("</worksheet>");
-        let rels = std::mem::take(&mut sheet.link_rels);
         self.zip().write_all(s.as_bytes())?;
+        let opts = self.opts;
+        if !comments.is_empty() {
+            self.zip().start_file(format!("xl/comments{n}.xml"), opts)?;
+            self.zip()
+                .write_all(format!("{COMMENTS_HEADER}{comments}{COMMENTS_FOOTER}").as_bytes())?;
+            self.zip()
+                .start_file(format!("xl/drawings/vmlDrawing{n}.vml"), opts)?;
+            self.zip()
+                .write_all(format!("{VML_HEADER}{shapes}{VML_FOOTER}").as_bytes())?;
+        }
+        for (table, &id) in tables.iter().zip(&table_ids) {
+            self.zip()
+                .start_file(format!("xl/tables/table{id}.xml"), opts)?;
+            self.zip().write_all(table.xml(id).as_bytes())?;
+        }
+        self.sheets[index].table_ids = table_ids;
         if !rels.is_empty() {
             let opts = self.opts;
             self.zip().start_file(
@@ -780,14 +955,34 @@ impl XlsxWriter {
             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n\
              <Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n    \
              <Default ContentType=\"application/xml\" Extension=\"xml\"/>\n    \
-             <Default ContentType=\"application/vnd.openxmlformats-package.relationships+xml\" Extension=\"rels\"/>\n    \
-             <Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\" PartName=\"/xl/workbook.xml\"/>",
+             <Default ContentType=\"application/vnd.openxmlformats-package.relationships+xml\" Extension=\"rels\"/>\n    ",
         );
-        for i in 1..=self.sheets.len() {
+        if self.sheets.iter().any(|s| s.has_comments) {
+            s.push_str(
+                "<Default ContentType=\"application/vnd.openxmlformats-officedocument.vmlDrawing\" Extension=\"vml\"/>\n    ",
+            );
+        }
+        s.push_str(
+            "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\" PartName=\"/xl/workbook.xml\"/>",
+        );
+        for (i, sheet) in self.sheets.iter().enumerate() {
+            let n = i + 1;
             let _ = write!(
                 s,
-                "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\" PartName=\"/xl/worksheets/sheet{i}.xml\"/>"
+                "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\" PartName=\"/xl/worksheets/sheet{n}.xml\"/>"
             );
+            if sheet.has_comments {
+                let _ = write!(
+                    s,
+                    "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\" PartName=\"/xl/comments{n}.xml\" />"
+                );
+            }
+            for id in &sheet.table_ids {
+                let _ = write!(
+                    s,
+                    "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml\" PartName=\"/xl/tables/table{id}.xml\"/>"
+                );
+            }
         }
         s.push_str(
             "<Override ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\" PartName=\"/xl/styles.xml\"/>\n\
@@ -871,6 +1066,12 @@ impl Sheet {
             link_rels: String::new(),
             external_links: 0,
             auto_size: None,
+            validations: Vec::new(),
+            comments: String::new(),
+            comment_shapes: String::new(),
+            has_comments: false,
+            tables: Vec::new(),
+            table_ids: Vec::new(),
         }
     }
 
@@ -958,7 +1159,7 @@ fn measure(
     style: &Style,
     col: u32,
     row: u32,
-    filter: Option<&CellRange>,
+    filter: bool,
     merges: &[CellRange],
 ) -> Option<f64> {
     let merged = merges.iter().find(|m| {
@@ -994,11 +1195,42 @@ fn measure(
                 size: fallback.font_size as f64,
             },
             rotation: style.text_rotation,
-            filter: filter
-                .is_some_and(|f| f.first_row == row && (f.first_col..=f.last_col).contains(&col)),
+            filter,
             indent: i64::from(style.horizontal.as_deref() == Some("center")),
         },
     ))
+}
+
+/// `B12` for 0-based column 1, row 12.
+fn cell_ref(col: usize, row: u32) -> String {
+    let mut s = String::with_capacity(8);
+    column_letters(col, &mut s);
+    let _ = write!(s, "{row}");
+    s
+}
+
+/// The cell is in the header row of the autofilter or of a table with filter
+/// buttons: auto-size leaves room for the dropdown (PhpSpreadsheet's
+/// `getAutoFilterIndentRanges`).
+fn is_filter_header(sheet: &Sheet, col: u32, row: u32) -> bool {
+    let in_header = |r: &CellRange| r.first_row == row && (r.first_col..=r.last_col).contains(&col);
+    sheet.auto_filter.as_ref().is_some_and(in_header)
+        || sheet
+            .tables
+            .iter()
+            .any(|t| t.filters_header() && in_header(&t.range))
+}
+
+/// A header cell's text, for a table column name.
+fn header_text(data: &CellData<'_>) -> Option<String> {
+    match *data {
+        CellData::Empty => None,
+        CellData::Str(s) => Some(s.to_string()),
+        CellData::Formula(f) => Some(format!("={f}")),
+        CellData::Int(i) => Some(i.to_string()),
+        CellData::Float(f) => Some(autosize::value_string(f)),
+        CellData::Bool(b) => Some(if b { "TRUE" } else { "FALSE" }.to_string()),
+    }
 }
 
 fn parse_range_arg(range: &str) -> Result<CellRange> {
@@ -1146,6 +1378,7 @@ mod tests {
             style: None,
             multiline: false,
             link: None,
+            comment: None,
         }
     }
 
@@ -1194,6 +1427,7 @@ mod tests {
             style: Some(99),
             multiline: false,
             link: None,
+            comment: None,
         }];
         assert!(w.add_row(&bad, None).is_err());
         // No row number used and the sheet isn't started: setup is still allowed.
