@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use RustySheet\Dev\TinyXlsx;
 use RustySheet\Reader;
 use RustySheet\ReaderException;
 use RustySheet\UnsupportedFormatException;
@@ -66,7 +67,104 @@ describe('options', function () {
         'csv not an array' => [['csv' => ';'], 'expected an array'],
         'csv unknown key' => [['csv' => ['separator' => ';']], 'unknown option'],
         'csv multi-char delimiter' => [['csv' => ['delimiter' => '::']], 'single character'],
+        'empty_cells not blank or null' => [['empty_cells' => 'x'], "expected '' or null"],
+        'empty_cells false' => [['empty_cells' => false], "expected '' or null"],
     ]);
+});
+
+describe('rowCount', function () {
+    it('counts exactly the rows nextRows yields, for every fixture and sheet', function (string $path) {
+        foreach ([false, true] as $preserve) {
+            $options = ['preserve_empty_rows' => $preserve];
+            $reader = Reader::open($path, $options);
+            foreach ($reader->sheetNames() as $index => $name) {
+                $all = [];
+                try {
+                    while ($batch = $reader->nextRows($index, 100)) {
+                        $all += $batch;
+                    }
+                } catch (ReaderException) {
+                    expect(fn () => Reader::open($path, $options)->rowCount($index))->toThrow(ReaderException::class);
+                    continue;
+                }
+                $label = basename($path)." sheet $index, preserve_empty_rows ".var_export($preserve, true);
+                expect(Reader::open($path, $options)->rowCount($index))->toBe(count($all), $label)
+                    ->and(Reader::open($path, $options)->rowCount($name))->toBe(count($all), $label);
+            }
+        }
+    })->with(readable_fixtures());
+
+    it('reads on its own stream, leaving nextRows where it was', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'));
+        $first = $reader->nextRows(0, 5);
+
+        expect($reader->rowCount(0))->toBe(12)
+            ->and(array_keys($reader->nextRows(0, 100)))->toBe(range(6, 12))
+            ->and($reader->rowCount(0))->toBe(12); // also after the sheet is finished
+        expect(array_keys($first))->toBe(range(1, 5));
+    });
+
+    it('does not check cell values', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+            'calculated_formulas' => true,
+            'formulas_without_cached_value' => 'throw',
+        ]);
+
+        expect($reader->rowCount(0))->toBe(12);
+    });
+
+    it('throws for an unknown sheet and after close', function () {
+        $reader = Reader::open(fixtures_path('edge/formulas.xlsx'));
+
+        expect(fn () => $reader->rowCount(5))->toThrow(ReaderException::class, 'no sheet at index 5')
+            ->and(fn () => $reader->rowCount('Nope'))->toThrow(ReaderException::class, "no sheet named 'Nope'");
+        $reader->close();
+        expect(fn () => $reader->rowCount(0))->toThrow(ReaderException::class, 'closed');
+    });
+});
+
+describe('empty_cells', function () {
+    // A1 = 1, B1 a gap, C1 empty inline text, D1 an empty t="str", E1 = ' ', F1 = 5, then a
+    // trailing empty cell. Row 2 is an empty-text formula, which is not blank.
+    $rows = '<row r="1"><c r="A1"><v>1</v></c><c r="C1" t="inlineStr"><is><t></t></is></c>'
+        .'<c r="D1" t="str"><v></v></c><c r="E1" t="inlineStr"><is><t xml:space="preserve"> </t></is></c>'
+        .'<c r="F1"><v>5</v></c><c r="G1"/></row>'
+        .'<row r="2"><c r="A2" t="str"><f>""</f><v></v></c><c r="B2"><v>2</v></c></row>';
+
+    it('gives blank cells inside a row as \'\' by default', function (array $options) use ($rows) {
+        $path = TinyXlsx::write(sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.xlsx', $rows);
+
+        expect(Reader::open($path, $options)->nextRows(0))->toBe([
+            1 => [1, '', '', '', ' ', 5],
+            2 => ['=""', 2],
+        ]);
+        unlink($path);
+    })->with(['default' => [[]], "''" => [['empty_cells' => '']]]);
+
+    it('gives them as null with empty_cells => null', function () use ($rows) {
+        $path = TinyXlsx::write(sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.xlsx', $rows);
+
+        expect(Reader::open($path, ['empty_cells' => null])->nextRows(0))->toBe([
+            1 => [1, null, null, null, ' ', 5],
+            2 => ['=""', 2],
+        ])->and(Reader::open($path, ['empty_cells' => null, 'calculated_formulas' => true])->nextRows(0))->toBe([
+            1 => [1, null, null, null, ' ', 5],
+            2 => ['', 2],
+        ]);
+        unlink($path);
+    });
+
+    it('applies to CSV fields and preserved blank lines', function () {
+        $path = sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.csv';
+        file_put_contents($path, "a,,c\n\n,b\n");
+
+        expect(Reader::open($path, ['empty_cells' => null, 'preserve_empty_rows' => true])->nextRows(0))->toBe([
+            1 => ['a', null, 'c'],
+            2 => [null],
+            3 => [null, 'b'],
+        ]);
+        unlink($path);
+    });
 });
 
 describe('nextRows', function () {
@@ -243,6 +341,42 @@ describe('formulas', function () {
         $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), ['calculated_formulas' => true])->nextRows(0);
 
         expect(array_column($rows, 3))->toBe([30, 'ab', false, null, 10, 12, 14, null, 45823, 3.3333333333333335, 9, 6]);
+    });
+
+    describe('formulas_without_cached_value', function () {
+        // Row 4 cached an error (#DIV/0!); row 8 was never calculated.
+        it('gives null by default and with null', function (array $extra) {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), ['calculated_formulas' => true] + $extra)->nextRows(0);
+
+            expect($rows[4][3])->toBeNull()->and($rows[8][3])->toBeNull();
+        })->with(['default' => [[]], 'null' => [['formulas_without_cached_value' => 'null']]]);
+
+        it('gives the formula text with formula, and still null for a cached error', function () {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+                'calculated_formulas' => true,
+                'formulas_without_cached_value' => 'formula',
+            ])->nextRows(0);
+
+            expect(array_column($rows, 3))->toBe([30, 'ab', false, null, 10, 12, 14, '=B8*3', 45823, 3.3333333333333335, 9, 6]);
+        });
+
+        it('throws naming the cell with throw, but not for a cached error', function () {
+            $reader = Reader::open(fixtures_path('edge/formulas.xlsx'), [
+                'calculated_formulas' => true,
+                'formulas_without_cached_value' => 'throw',
+            ]);
+
+            expect($reader->nextRows(0, 7))->toHaveCount(7)
+                ->and(fn () => $reader->nextRows(0))->toThrow(ReaderException::class, 'formulas.xlsx: Formulas!D8 has a formula with no cached value (=B8*3)')
+                // The sheet is finished: a retry doesn't skip past the bad row.
+                ->and($reader->nextRows(0))->toBe([]);
+        });
+
+        it('is ignored without calculated_formulas', function () {
+            $rows = Reader::open(fixtures_path('edge/formulas.xlsx'), ['formulas_without_cached_value' => 'throw'])->nextRows(0);
+
+            expect($rows[8][3])->toBe('=B8*3');
+        });
     });
 });
 

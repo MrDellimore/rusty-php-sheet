@@ -250,7 +250,7 @@ fn formulas_with_shared_expansion() {
             "=B1+C1 [30]",
             "=\"a\"&\"b\" [\"ab\"]",
             "=B3>C3 [false]",
-            "=B4/C4 [-]", // error result → no cached value (OpenSpout: null)
+            "=B4/C4 [null]", // error result: cached, but null (OpenSpout: null)
             "=B5*2 [10]",
             "=B6*2 [12]", // shared child: OpenSpout gives "=" (deliberate deviation)
             "=B7*2 [14]",

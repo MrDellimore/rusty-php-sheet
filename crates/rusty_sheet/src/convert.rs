@@ -6,7 +6,8 @@
 //! | Date (duration)      | day fraction                     | DateInterval                  |
 //! | Date (any)           | dates = formatted: the display string OpenSpout renders (SHOULD_FORMAT_DATES) |
 //! | Formula              | "=FORMULA", or the cached value with `calculated_formulas` |
-//! | Empty (mid-row gap)  | ''                                                               |
+//! | Formula, never calculated | with `calculated_formulas`: per `formulas_without_cached_value` (null, throw, "=FORMULA") |
+//! | Empty (mid-row gap)  | '', or null with `empty_cells => null` (also for empty text)     |
 
 use std::collections::HashMap;
 
@@ -20,11 +21,11 @@ use rusty_sheet_core::xlsx::dates::{
     SerialValue, duration_parts, normalised_serial, serial_to_parts,
 };
 use rusty_sheet_core::xlsx::php_date::{format_duration, to_php_date_format};
-use rusty_sheet_core::xlsx::{SharedStrings, Styles, php_date};
+use rusty_sheet_core::xlsx::{SharedStrings, Styles, cell_ref, php_date};
 use rusty_sheet_core::{CellValue, DateKind, NumFmtId};
 
 use crate::exceptions::reader_error;
-use crate::options::{DateMode, ReaderOptions};
+use crate::options::{DateMode, ReaderOptions, UncachedFormula};
 
 /// Excel serial of 1970-01-01.
 const UNIX_EPOCH_SERIAL: i64 = 25_569;
@@ -33,6 +34,11 @@ const UNIX_EPOCH_SERIAL: i64 = 25_569;
 /// so batches without dates pay nothing for them.
 pub struct Converter<'a> {
     opts: &'a ReaderOptions,
+    /// File path and sheet name, for error messages.
+    path: &'a str,
+    sheet: &'a str,
+    /// Source row number and 0-based column of the cell being converted.
+    at: (u32, usize),
     shared: &'a SharedStrings,
     styles: &'a Styles,
     /// Excel format code → PHP date() format, per number format (kept across batches).
@@ -44,12 +50,17 @@ pub struct Converter<'a> {
 impl<'a> Converter<'a> {
     pub fn new(
         opts: &'a ReaderOptions,
+        path: &'a str,
+        sheet: &'a str,
         shared: &'a SharedStrings,
         styles: &'a Styles,
         php_formats: &'a mut HashMap<u32, String>,
     ) -> Self {
         Converter {
             opts,
+            path,
+            sheet,
+            at: (0, 0),
             shared,
             styles,
             php_formats,
@@ -58,10 +69,16 @@ impl<'a> Converter<'a> {
         }
     }
 
-    pub fn row(&mut self, cells: &[CellValue]) -> PhpResult<ZBox<ZendHashTable>> {
+    /// Convert row `number` (1-based, as in the source).
+    pub fn row(&mut self, number: u32, cells: &[CellValue]) -> PhpResult<ZBox<ZendHashTable>> {
         let mut arr = ZendHashTable::with_capacity(cells.len() as u32);
-        for cell in cells {
-            arr.push(self.value(cell)?)?;
+        for (col, cell) in cells.iter().enumerate() {
+            self.at = (number, col);
+            if self.opts.empty_cells_null && cell.is_blank(self.shared) {
+                arr.push(Zval::null())?;
+            } else {
+                arr.push(self.value(cell)?)?;
+            }
         }
         Ok(arr)
     }
@@ -110,10 +127,19 @@ impl<'a> Converter<'a> {
             CellValue::IsoDate(text) => return self.iso_date(text),
             CellValue::Formula { formula, cached } => {
                 if self.opts.calculated_formulas {
-                    return match cached {
-                        Some(c) => self.value(c),
-                        None => Ok(Zval::null()),
-                    };
+                    match (cached, self.opts.formulas_without_cached_value) {
+                        (Some(c), _) => return self.value(c),
+                        (None, UncachedFormula::Null) => return Ok(Zval::null()),
+                        (None, UncachedFormula::Throw) => {
+                            return Err(reader_error(format!(
+                                "{}: {} has a formula with no cached value (={formula}); \
+                                 recalculate and save the file in Excel",
+                                self.path,
+                                cell_ref(self.sheet, self.at.0, self.at.1),
+                            )));
+                        }
+                        (None, UncachedFormula::Formula) => {}
+                    }
                 }
                 z.set_string(&format!("={formula}"), false)?;
             }

@@ -92,6 +92,10 @@ Values and files match OpenSpout's except for these deliberate differences:
     `ReaderException`, or skip the row with `on_error => 'skip_row'`.
   - Dates before 1900-03-01 get their true serial (laravel-sheet-stream's own conversion
     was a day off).
+  - **Beyond OpenSpout** (opt-in, 0.1.3+): `formulas_without_cached_value => 'throw' |
+    'formula'` for formulas that were never calculated (OpenSpout gives `null`),
+    `empty_cells => null` for blank cells inside a row (Laravel Excel parity; OpenSpout
+    gives `''`), and `Reader::rowCount()`.
 - **Writing XLSX:**
   - No `<dimension>` element, except on auto-sized sheets (rows stream straight into the
     file).
@@ -144,9 +148,13 @@ php php/bin/dump-openspout.php tests/fixtures/edge/dates.xlsx   # see OpenSpout'
 
 ### Releasing
 
-Versions follow [semantic versioning](https://semver.org). While the version is 0.x, a
-patch release (`0.1.1`) only fixes bugs and a minor release (`0.2.0`) may change the API;
-from `1.0.0`, minor releases add features without breaking anything. Users pin a range
+Versions follow [semantic versioning](https://semver.org), read the way Cargo and
+Composer read `^0.1`. While the version is 0.x, a patch release (`0.1.3`) fixes bugs or
+adds features (new options, new methods) without breaking anything, and a minor release
+(`0.2.0`) may change the API; from `1.0.0`, minor releases add features without breaking
+anything. Callers that use something added in a patch release check for it with
+`version_compare(phpversion('rusty_sheet'), '0.1.3', '>=')`: an older extension rejects
+unknown options with `ValueError`. Users pin a range
 (`pie install "mrdellimore/rusty-sheet:^0.1"`, or `"ext-rusty_sheet": "^0.1"` in Composer)
 and get every compatible release, never a breaking one.
 

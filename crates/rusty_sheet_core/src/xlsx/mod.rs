@@ -34,6 +34,23 @@ pub use sheet::{ReadOptions, Row, SheetRows};
 pub use styles::{CellFormat, Styles};
 pub use workbook::SheetInfo;
 
+/// An A1-style reference for a 1-based row and 0-based column, prefixed with the
+/// sheet name (quoted when Excel would quote it): `Sheet1!D8`, `'My Sheet'!A1`.
+pub fn cell_ref(sheet: &str, row: u32, col: usize) -> String {
+    let cell = format!("{}{row}", formula::col_letters(col as i64 + 1));
+    if sheet.is_empty() {
+        return cell;
+    }
+    if sheet
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        format!("{sheet}!{cell}")
+    } else {
+        format!("'{}'!{cell}", sheet.replace('\'', "''"))
+    }
+}
+
 use package::Package;
 use workbook::Workbook;
 
@@ -130,5 +147,19 @@ impl XlsxReader {
             None => Styles::default(),
         };
         Ok(Arc::clone(self.styles.insert(Arc::new(styles))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cell_ref;
+
+    #[test]
+    fn cell_refs_quote_sheet_names_like_excel() {
+        assert_eq!(cell_ref("Sheet1", 8, 3), "Sheet1!D8");
+        assert_eq!(cell_ref("Sheet1", 1, 26), "Sheet1!AA1");
+        assert_eq!(cell_ref("My Sheet", 1, 0), "'My Sheet'!A1");
+        assert_eq!(cell_ref("Bob's", 2, 1), "'Bob''s'!B2");
+        assert_eq!(cell_ref("", 3, 0), "A3");
     }
 }
