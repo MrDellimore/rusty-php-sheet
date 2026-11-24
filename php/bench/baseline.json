@@ -20,6 +20,12 @@
             "rss_mb": 29.7,
             "rows_per_s": 55294
         },
+        "write-xlsx-autosize": {
+            "rows": 400000,
+            "seconds": 11.23,
+            "rss_mb": 30,
+            "rows_per_s": 35613
+        },
         "write-csv": {
             "rows": 400000,
             "seconds": 2.928,

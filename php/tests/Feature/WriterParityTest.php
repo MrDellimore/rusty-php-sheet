@@ -176,15 +176,21 @@ function tmp_path(string $ext): string
     return sys_get_temp_dir().'/'.uniqid('rs_writer_', true).'.'.$ext;
 }
 
-it('writes XLSX like OpenSpout', function (string $name) {
+it('writes XLSX like OpenSpout', function (string $name, bool $autoSize) {
     $ops = writer_scenarios()[$name];
     [$os, $rs] = [tmp_path('xlsx'), tmp_path('xlsx')];
     try {
         WriterParity::writeOpenSpout($os, $ops, WRITER_STYLES);
-        WriterParity::writeRusty($rs, $ops, WRITER_STYLES);
+        WriterParity::writeRusty($rs, $ops, WRITER_STYLES, autoSize: $autoSize);
 
         $expected = WriterParity::xlsxParts($os);
         $actual = WriterParity::xlsxParts($rs);
+        if ($autoSize) {
+            // Auto-size (beyond OpenSpout) changes <cols> and adds <dimension>; the rows,
+            // which took the buffered path, and everything else must still match.
+            $strip = fn (array $parts) => array_map(fn ($xml) => preg_replace('#<cols>.*?</cols>|<dimension ref="[^"]*"/>#', '', $xml), $parts);
+            [$expected, $actual] = [$strip($expected), $strip($actual)];
+        }
         expect(array_keys($actual))->toBe(array_keys($expected));
 
         // styles.xml must be byte-identical; cells are additionally compared by their
@@ -204,7 +210,7 @@ it('writes XLSX like OpenSpout', function (string $name) {
         @unlink($os);
         @unlink($rs);
     }
-})->with(array_keys(writer_scenarios()));
+})->with(array_keys(writer_scenarios()))->with(['streamed' => false, 'auto-sized (buffered)' => true]);
 
 it('writes CSV byte-for-byte like OpenSpout', function (array $csv, string $ext = 'csv') {
     $ops = array_values(array_filter(

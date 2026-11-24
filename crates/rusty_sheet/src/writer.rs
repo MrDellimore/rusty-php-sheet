@@ -110,7 +110,14 @@ impl Writer {
         });
         let target = match format.as_str() {
             "xlsx" => Target::Xlsx(Box::new(XlsxState {
-                writer: XlsxWriter::create(Path::new(&path)).map_err(|e| from_core(e, &path))?,
+                writer: {
+                    let mut w =
+                        XlsxWriter::create(Path::new(&path)).map_err(|e| from_core(e, &path))?;
+                    if let Some(dir) = &o.temp_dir {
+                        w.set_temp_dir(Path::new(dir));
+                    }
+                    w
+                },
                 date_format: o.date_format,
                 datetime_format: o.datetime_format,
                 date_style: None,
@@ -197,6 +204,45 @@ impl Writer {
         if let Target::Xlsx(x) = self.target_mut()? {
             x.writer
                 .show_grid_lines(show)
+                .map_err(|e| from_core(e, &path))?;
+        }
+        Ok(())
+    }
+
+    /// Size columns to their content like PhpSpreadsheet's auto-size: `true` for every
+    /// column, or a list of 1-based columns. Before the sheet's first row; the sheet's
+    /// rows are then buffered in a temp file until it ends. Ignored for CSV.
+    pub fn auto_size_columns(&mut self, columns: Option<&Zval>) -> PhpResult<()> {
+        let path = self.path.clone();
+        let list: Option<Vec<u32>> = if columns.is_none_or(|c| c.dereference().is_true()) {
+            None
+        } else if let Some(arr) = columns
+            .map(Zval::dereference)
+            .filter(|c| c.is_array())
+            .and_then(Zval::array)
+        {
+            Some(
+                arr.values()
+                    .map(|v| {
+                        v.long()
+                            .filter(|_| v.is_long())
+                            .and_then(|c| u32::try_from(c).ok())
+                            .filter(|&c| c > 0)
+                            .ok_or_else(|| {
+                                invalid_option("columns", "column numbers are 1-based ints")
+                            })
+                    })
+                    .collect::<PhpResult<_>>()?,
+            )
+        } else {
+            return Err(invalid_option(
+                "columns",
+                "expected true (every column) or a list of 1-based column numbers",
+            ));
+        };
+        if let Target::Xlsx(x) = self.target_mut()? {
+            x.writer
+                .auto_size_columns(list.as_deref())
                 .map_err(|e| from_core(e, &path))?;
         }
         Ok(())
@@ -788,6 +834,8 @@ fn enum_value(name: &str, value: String, allowed: &[&str]) -> PhpResult<String> 
 
 struct WriterOptions {
     format: Option<String>,
+    /// Where auto-sized sheets buffer their rows.
+    temp_dir: Option<String>,
     date_format: String,
     datetime_format: String,
     csv: CsvWriterOptions,
@@ -798,6 +846,7 @@ impl WriterOptions {
     fn parse(arr: Option<&ZendHashTable>) -> PhpResult<Self> {
         let mut o = WriterOptions {
             format: None,
+            temp_dir: None,
             date_format: "yyyy-mm-dd".into(),
             datetime_format: "yyyy-mm-dd hh:mm:ss".into(),
             csv: CsvWriterOptions::default(),
@@ -818,6 +867,13 @@ impl WriterOptions {
                 "format" => o.format = Some(string("format")?.to_lowercase()),
                 "date_format" => o.date_format = string("date_format")?,
                 "datetime_format" => o.datetime_format = string("datetime_format")?,
+                "temp_dir" => {
+                    let dir = string("temp_dir")?;
+                    if !Path::new(&dir).is_dir() {
+                        return Err(invalid_option("temp_dir", "not a directory"));
+                    }
+                    o.temp_dir = Some(dir);
+                }
                 "csv" => {
                     let csv = v
                         .array()
@@ -864,7 +920,7 @@ impl WriterOptions {
                 other => {
                     return Err(invalid_option(
                         other,
-                        "unknown option; known: format, date_format, datetime_format, csv",
+                        "unknown option; known: format, date_format, datetime_format, temp_dir, csv",
                     ));
                 }
             }

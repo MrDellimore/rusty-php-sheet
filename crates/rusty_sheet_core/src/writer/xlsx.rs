@@ -9,15 +9,20 @@
 //!
 //! Merged cells, the autofilter and hyperlinks are written after `<sheetData>` when a
 //! sheet ends, as OpenSpout does; only the links are kept in memory until then.
+//!
+//! A sheet with auto-sized columns can't stream: `<cols>` comes before the rows. Its
+//! rows go to a temp file instead, and the sheet is written at its end, with the
+//! measured widths and (because the size is then known) a `<dimension>`.
 
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
+use super::autosize::{self, Measure};
 use super::escape::{escape, escape_into, truncate_for_cell};
 use super::style::{Style, StyleRegistry};
 use crate::{Error, Result};
@@ -169,6 +174,72 @@ struct Sheet {
     /// The sheet's `.rels` entries for links to URLs.
     link_rels: String,
     external_links: u32,
+    auto_size: Option<AutoSize>,
+}
+
+/// Auto-sized columns of a sheet and what has been measured so far.
+struct AutoSize {
+    /// 0-based columns to size; `None` sizes every column.
+    columns: Option<Vec<bool>>,
+    /// Widest cell per 0-based column (PhpSpreadsheet units), `None` if no cell yet.
+    widths: Vec<Option<f64>>,
+    /// The most cells in a written row (for `<dimension>`).
+    max_cells: usize,
+    rows: Option<TempRows>,
+}
+
+impl AutoSize {
+    fn sizes(&self, col: usize) -> bool {
+        self.columns
+            .as_ref()
+            .is_none_or(|c| c.get(col).copied().unwrap_or(false))
+    }
+}
+
+/// The rows of a buffered sheet, in a temp file removed when dropped (also on
+/// errors and when the writer is dropped without `close()`).
+struct TempRows {
+    path: PathBuf,
+    file: Option<BufWriter<File>>,
+}
+
+impl TempRows {
+    fn create(dir: &Path) -> Result<Self> {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = dir.join(format!("rusty_sheet_{}_{n}.rows.xml", std::process::id()));
+        let file = File::options().write(true).create_new(true).open(&path)?;
+        Ok(TempRows {
+            path,
+            file: Some(BufWriter::with_capacity(256 * 1024, file)),
+        })
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.file
+            .as_mut()
+            .expect("written before it is copied")
+            .write_all(bytes)?;
+        Ok(())
+    }
+
+    /// Copy everything written into `out`.
+    fn copy_into(&mut self, out: &mut impl Write) -> Result<()> {
+        self.file
+            .take()
+            .expect("copied once, at the end of the sheet")
+            .flush()?;
+        let mut file = std::io::BufReader::with_capacity(256 * 1024, File::open(&self.path)?);
+        std::io::copy(&mut file, out)?;
+        Ok(())
+    }
+}
+
+impl Drop for TempRows {
+    fn drop(&mut self) {
+        self.file = None;
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 pub struct XlsxWriter {
@@ -183,6 +254,8 @@ pub struct XlsxWriter {
     buf: String,
     /// Set once the workbook parts are written; `Drop` finishes the file otherwise.
     closed: bool,
+    /// Where auto-sized sheets buffer their rows.
+    temp_dir: PathBuf,
 }
 
 impl XlsxWriter {
@@ -199,7 +272,45 @@ impl XlsxWriter {
             registry: StyleRegistry::default(),
             buf: String::with_capacity(16 * 1024),
             closed: false,
+            temp_dir: std::env::temp_dir(),
         })
+    }
+
+    /// Where auto-sized sheets buffer their rows (default: the system temp dir).
+    pub fn set_temp_dir(&mut self, dir: &Path) {
+        self.temp_dir = dir.to_path_buf();
+    }
+
+    /// Size these 1-based columns (all, for `None`) to their content, like
+    /// PhpSpreadsheet's auto-size (approximate mode). Before the sheet's first row.
+    /// `set_column_width` wins for the columns it names.
+    pub fn auto_size_columns(&mut self, columns: Option<&[u32]>) -> Result<()> {
+        let columns = match columns {
+            None => None,
+            Some(cols) => {
+                let mut set = Vec::new();
+                for &c in cols {
+                    if c == 0 || c as usize > MAX_COLUMNS {
+                        return Err(Error::InvalidArgument(format!(
+                            "column {c} is out of range: columns are 1-based, up to {MAX_COLUMNS}"
+                        )));
+                    }
+                    let i = c as usize - 1;
+                    if set.len() <= i {
+                        set.resize(i + 1, false);
+                    }
+                    set[i] = true;
+                }
+                Some(set)
+            }
+        };
+        self.current_before_rows("auto-size columns")?.auto_size = Some(AutoSize {
+            columns,
+            widths: Vec::new(),
+            max_cells: 0,
+            rows: None,
+        });
+        Ok(())
     }
 
     /// Register a style; the returned handle is used in [`Cell::style`].
@@ -378,6 +489,23 @@ impl XlsxWriter {
             {
                 continue;
             }
+            let sheet = self.sheets.last_mut().expect("always one sheet");
+            if let Some(auto) = sheet.auto_size.as_mut().filter(|a| a.sizes(col))
+                && let Some(width) = measure(
+                    &cell.data,
+                    self.registry.style(style_id),
+                    col as u32,
+                    row_number,
+                    sheet.auto_filter.as_ref(),
+                    &sheet.merges,
+                )
+            {
+                if auto.widths.len() <= col {
+                    auto.widths.resize(col + 1, None);
+                }
+                let w = &mut auto.widths[col];
+                *w = Some(w.map_or(width, |old| old.max(width)));
+            }
             col_letters.clear();
             column_letters(col, &mut col_letters);
             let _ = write!(
@@ -413,6 +541,15 @@ impl XlsxWriter {
             }
         }
         self.buf.push_str("</row>");
+        let sheet = self.sheets.last_mut().expect("always one sheet");
+        if let Some(auto) = sheet.auto_size.as_mut() {
+            auto.max_cells = auto.max_cells.max(cells.len());
+            auto.rows
+                .as_mut()
+                .expect("opened with the sheet")
+                .write(self.buf.as_bytes())?;
+            return Ok(());
+        }
         let zip = self
             .zip
             .as_mut()
@@ -487,7 +624,12 @@ impl XlsxWriter {
     fn ensure_sheet_open(&mut self) -> Result<()> {
         let i = self.sheets.len() - 1;
         if !self.sheets[i].open {
-            self.start_sheet_part(i)?;
+            // An auto-sized sheet starts in a temp file; its zip entry comes at the end.
+            if let Some(auto) = self.sheets[i].auto_size.as_mut() {
+                auto.rows = Some(TempRows::create(&self.temp_dir)?);
+            } else {
+                self.start_sheet_part(i)?;
+            }
             self.sheets[i].open = true;
         }
         Ok(())
@@ -503,6 +645,18 @@ impl XlsxWriter {
     /// Everything after the rows (OpenSpout's order: autofilter, merges, hyperlinks),
     /// then the sheet's `.rels` part if it links to URLs.
     fn end_sheet_part(&mut self, index: usize) -> Result<()> {
+        if let Some(mut rows) = self.sheets[index]
+            .auto_size
+            .as_mut()
+            .and_then(|a| a.rows.take())
+        {
+            self.start_sheet_part(index)?;
+            let zip = self
+                .zip
+                .as_mut()
+                .expect("writes happen before the file is finished");
+            rows.copy_into(zip)?;
+        }
         let sheet = &mut self.sheets[index];
         let mut s = String::from("</sheetData>");
         if let Some(f) = sheet.auto_filter {
@@ -555,19 +709,29 @@ impl XlsxWriter {
                 "<sheetPr filterMode=\"false\"><pageSetUpPr fitToPage=\"false\"/></sheetPr>",
             );
         }
+        // Only a buffered (auto-sized) sheet knows its size before its rows.
+        if let Some(auto) = sheet.auto_size.as_ref().filter(|a| a.max_cells > 0) {
+            let mut last = String::new();
+            column_letters(auto.max_cells - 1, &mut last);
+            let _ = write!(s, "<dimension ref=\"A1:{last}{}\"/>", sheet.rows);
+        }
         if let Some(v) = &sheet.view {
             s.push_str(&sheet_view_xml(v));
         }
-        if !sheet.widths.is_empty() {
-            s.push_str("<cols>");
-            for (min, max, width) in &sheet.widths {
-                let _ = write!(
-                    s,
-                    "<col min=\"{min}\" max=\"{max}\" width=\"{}\" customWidth=\"true\"/>",
-                    number(*width)
-                );
+        match &sheet.auto_size {
+            None if !sheet.widths.is_empty() => {
+                s.push_str("<cols>");
+                for (min, max, width) in &sheet.widths {
+                    let _ = write!(
+                        s,
+                        "<col min=\"{min}\" max=\"{max}\" width=\"{}\" customWidth=\"true\"/>",
+                        number(*width)
+                    );
+                }
+                s.push_str("</cols>");
             }
-            s.push_str("</cols>");
+            None => {}
+            Some(auto) => s.push_str(&auto_size_cols(&sheet.widths, &auto.widths)),
         }
         s.push_str("<sheetData>");
         self.zip().write_all(s.as_bytes())?;
@@ -706,6 +870,7 @@ impl Sheet {
             hyperlinks: String::new(),
             link_rels: String::new(),
             external_links: 0,
+            auto_size: None,
         }
     }
 
@@ -742,6 +907,98 @@ impl Sheet {
             }
         }
     }
+}
+
+/// `<cols>` for an auto-sized sheet, ascending: explicit widths win, then measured
+/// ones (marked bestFit), consecutive columns with the same width in one range.
+fn auto_size_cols(explicit: &[(u32, u32, f64)], measured: &[Option<f64>]) -> String {
+    let mut cols: std::collections::BTreeMap<u32, (f64, bool)> = std::collections::BTreeMap::new();
+    for (i, w) in measured.iter().enumerate() {
+        if let Some(w) = w {
+            cols.insert(i as u32 + 1, (*w, true));
+        }
+    }
+    for &(min, max, w) in explicit {
+        for c in min..=max {
+            cols.insert(c, (w, false));
+        }
+    }
+    if cols.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("<cols>");
+    let mut iter = cols.into_iter().peekable();
+    while let Some((start, (w, best))) = iter.next() {
+        let mut end = start;
+        while let Some(&(next, (nw, nb))) = iter.peek() {
+            if next == end + 1 && nw == w && nb == best {
+                end = next;
+                iter.next();
+            } else {
+                break;
+            }
+        }
+        let _ = write!(
+            s,
+            "<col min=\"{start}\" max=\"{end}\" width=\"{}\" customWidth=\"true\"{}/>",
+            number(w),
+            if best { " bestFit=\"true\"" } else { "" }
+        );
+    }
+    s.push_str("</cols>");
+    s
+}
+
+/// The width PhpSpreadsheet's auto-size gives one cell, or `None` if it doesn't
+/// count: empty cells, formulas (PhpSpreadsheet would measure the calculated value,
+/// which the writer doesn't know), and cells in a merge (except the first cell of a
+/// one-column merge). Merges count when declared before the row is written.
+fn measure(
+    data: &CellData<'_>,
+    style: &Style,
+    col: u32,
+    row: u32,
+    filter: Option<&CellRange>,
+    merges: &[CellRange],
+) -> Option<f64> {
+    let merged = merges.iter().find(|m| {
+        (m.first_col..=m.last_col).contains(&col) && (m.first_row..=m.last_row).contains(&row)
+    });
+    if let Some(m) = merged
+        && !(m.first_col == m.last_col && m.first_col == col && m.first_row == row)
+    {
+        return None;
+    }
+    let format = style.format.as_deref();
+    let text = match *data {
+        CellData::Empty | CellData::Formula(_) => return None,
+        CellData::Str(s) => std::borrow::Cow::Borrowed(s),
+        CellData::Int(i) if format.is_none_or(|f| f == "General") => i.to_string().into(),
+        CellData::Int(i) => autosize::format_number(i as f64, format).into(),
+        CellData::Float(f) => autosize::format_number(f, format).into(),
+        CellData::Bool(b) => std::borrow::Cow::Borrowed(if b { "TRUE" } else { "FALSE" }),
+    };
+    if text.is_empty() {
+        return None;
+    }
+    let fallback = Style::fallback();
+    Some(autosize::column_width(
+        &text,
+        &Measure {
+            font: autosize::Font {
+                name: &style.font_name,
+                size: style.font_size as f64,
+            },
+            default_font: autosize::Font {
+                name: &fallback.font_name,
+                size: fallback.font_size as f64,
+            },
+            rotation: style.text_rotation,
+            filter: filter
+                .is_some_and(|f| f.first_row == row && (f.first_col..=f.last_col).contains(&col)),
+            indent: i64::from(style.horizontal.as_deref() == Some("center")),
+        },
+    ))
 }
 
 fn parse_range_arg(range: &str) -> Result<CellRange> {
@@ -1108,5 +1365,97 @@ mod tests {
     fn zip_has(path: &std::path::Path, name: &str) -> bool {
         let zip = zip::ZipArchive::new(std::fs::File::open(path).unwrap()).unwrap();
         zip.index_for_name(name).is_some()
+    }
+
+    fn temp_files(dir: &std::path::Path) -> usize {
+        std::fs::read_dir(dir).unwrap().count()
+    }
+
+    #[test]
+    fn auto_size_buffers_rows_and_writes_widths_first() {
+        let dir = std::env::temp_dir().join(format!("rs_autosize_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |auto: bool, path: &std::path::Path| {
+            let mut w = XlsxWriter::create(path).unwrap();
+            w.set_temp_dir(&dir);
+            if auto {
+                w.auto_size_columns(None).unwrap();
+                w.set_column_width(30.0, &[3]).unwrap();
+            }
+            w.set_auto_filter("A1:B1").unwrap();
+            w.merge_cells("A3:B3").unwrap();
+            w.add_row(&[cell("Name"), cell("Description"), cell("x")], None)
+                .unwrap();
+            w.add_row(&[cell("Alexandra"), cell("short"), cell("y")], None)
+                .unwrap();
+            w.add_row(&[cell("a merged title that is long"), cell("")], None)
+                .unwrap();
+            if auto {
+                assert_eq!(temp_files(&dir), 1, "rows go to a temp file");
+            }
+            w.close().unwrap();
+        };
+        let (streamed, buffered) = (tmp("as_stream"), tmp("as_buffer"));
+        write(false, &streamed);
+        write(true, &buffered);
+        assert_eq!(temp_files(&dir), 0, "the temp file is removed");
+
+        let a = part(&streamed, "xl/worksheets/sheet1.xml");
+        let b = part(&buffered, "xl/worksheets/sheet1.xml");
+        let rows = |s: &str| s[s.find("<sheetData>").unwrap()..].to_string();
+        assert_eq!(rows(&a), rows(&b), "same rows either way");
+        // Widths computed by PhpSpreadsheet 5.11 (approx mode, Calibri 12 default font):
+        // the header cells get filter-dropdown room, and the merged cell doesn't count.
+        assert!(b.contains("<dimension ref=\"A1:C3\"/>"), "{b}");
+        assert!(b.contains(concat!(
+            "<cols><col min=\"1\" max=\"1\" width=\"11.521\" customWidth=\"true\" bestFit=\"true\"/>",
+            "<col min=\"2\" max=\"2\" width=\"16.234\" customWidth=\"true\" bestFit=\"true\"/>",
+            "<col min=\"3\" max=\"3\" width=\"30\" customWidth=\"true\"/></cols><sheetData>"
+        )), "{b}");
+        assert!(!a.contains("<dimension") && !a.contains("<cols>"));
+
+        // Dropped without close(): the file is still finished and the temp file removed.
+        let dropped = tmp("as_drop");
+        {
+            let mut w = XlsxWriter::create(&dropped).unwrap();
+            w.set_temp_dir(&dir);
+            w.auto_size_columns(Some(&[2])).unwrap();
+            w.add_row(&[cell("not sized"), cell("sized")], None)
+                .unwrap();
+        }
+        assert_eq!(temp_files(&dir), 0);
+        let d = part(&dropped, "xl/worksheets/sheet1.xml");
+        assert!(d.contains("<cols><col min=\"2\" max=\"2\""), "{d}");
+        assert!(w_errors_are_arguments());
+        for p in [streamed, buffered, dropped] {
+            let _ = std::fs::remove_file(p);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn w_errors_are_arguments() -> bool {
+        let path = tmp("as_args");
+        let mut w = XlsxWriter::create(&path).unwrap();
+        let bad = matches!(
+            w.auto_size_columns(Some(&[0])),
+            Err(Error::InvalidArgument(_))
+        );
+        w.add_row(&[cell("x")], None).unwrap();
+        let late = matches!(w.auto_size_columns(None), Err(Error::InvalidData { .. }));
+        drop(w);
+        let _ = std::fs::remove_file(path);
+        bad && late
+    }
+
+    #[test]
+    fn unwritable_temp_dir_is_an_io_error() {
+        let path = tmp("as_tempdir");
+        let mut w = XlsxWriter::create(&path).unwrap();
+        w.set_temp_dir(std::path::Path::new("/nonexistent/rusty_sheet"));
+        w.auto_size_columns(None).unwrap();
+        assert!(matches!(w.add_row(&[cell("x")], None), Err(Error::Io(_))));
+        drop(w);
+        let _ = std::fs::remove_file(path);
     }
 }

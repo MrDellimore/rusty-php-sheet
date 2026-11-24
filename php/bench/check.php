@@ -17,7 +17,7 @@ $runs = (int) (getenv('BENCH_RUNS') ?: 3);
 $baselinePath = __DIR__.'/baseline.json';
 $tmp = sys_get_temp_dir();
 $php = PHP_BINARY;
-const SCENARIOS = ['read-xlsx', 'read-csv', 'write-xlsx', 'write-csv'];
+const SCENARIOS = ['read-xlsx', 'read-csv', 'write-xlsx', 'write-xlsx-autosize', 'write-csv'];
 const MAX_SLOWDOWN = 1.10;
 const MAX_MEMORY_GROWTH = 1.20;
 

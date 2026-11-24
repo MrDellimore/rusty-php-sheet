@@ -381,6 +381,11 @@ impl StyleRegistry {
         self.fill_of[i] != 0 || self.format_of[i] != 0 || self.border_of[i] != 0
     }
 
+    /// The style registered as `id` (for measuring auto-sized columns).
+    pub fn style(&self, id: u32) -> &Style {
+        &self.styles[id as usize]
+    }
+
     /// `StyleManager::getStylesXMLFileContent`.
     pub fn styles_xml(&self) -> String {
         let mut s = String::from(

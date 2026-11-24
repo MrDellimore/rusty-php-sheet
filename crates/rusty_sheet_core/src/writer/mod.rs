@@ -1,5 +1,6 @@
 //! Writers that produce the same files as OpenSpout's XLSX and CSV writers.
 
+pub mod autosize;
 pub mod csv;
 mod escape;
 pub mod style;

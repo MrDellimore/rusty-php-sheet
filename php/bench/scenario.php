@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 // One benchmark scenario in its own process, so peak RSS (Rust allocations
 // included) belongs to it alone. Prints JSON: {"rows", "seconds", "rss_mb"}.
-// Usage: php -d extension=… php/bench/scenario.php <read-xlsx|read-csv|write-xlsx|write-csv> <input.xlsx> <rows> <tmpdir>
+// Usage: php -d extension=… php/bench/scenario.php <read-xlsx|read-csv|write-xlsx|write-xlsx-autosize|write-csv> <input.xlsx> <rows> <tmpdir>
 
 use RustySheet\Reader;
 use RustySheet\Writer;
@@ -26,8 +26,11 @@ $readAll = function (string $path): int {
 };
 
 $date = new DateTimeImmutable('2025-06-15 14:30:00');
-$write = function (string $path) use ($rows, $date): int {
+$write = function (string $path, bool $autoSize = false) use ($rows, $date): int {
     $w = Writer::create($path);
+    if ($autoSize) {
+        $w->autoSizeColumns();
+    }
     for ($i = 0; $i < $rows; $i++) {
         $row = [];
         for ($c = 0; $c < 50; $c++) {
@@ -52,6 +55,7 @@ $count = match ($name) {
     'read-xlsx' => $readAll($xlsx),
     'read-csv' => $readAll($csv),
     'write-xlsx' => $write("{$tmp}/bench-write.xlsx"),
+    'write-xlsx-autosize' => $write("{$tmp}/bench-write.xlsx", true),
     'write-csv' => $write("{$tmp}/bench-write.csv"),
 };
 $seconds = (hrtime(true) - $start) / 1e9;

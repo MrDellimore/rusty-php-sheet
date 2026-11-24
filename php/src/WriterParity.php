@@ -181,14 +181,18 @@ final class WriterParity
         $writer->close();
     }
 
-    public static function writeRusty(string $path, array $ops, array $styles, array $csv = []): void
+    /** $autoSize: size every sheet's columns, so its rows take the buffered path. */
+    public static function writeRusty(string $path, array $ops, array $styles, array $csv = [], bool $autoSize = false): void
     {
-        self::ignoringNanWarning(fn () => self::writeRustyUnguarded($path, $ops, $styles, $csv));
+        self::ignoringNanWarning(fn () => self::writeRustyUnguarded($path, $ops, $styles, $csv, $autoSize));
     }
 
-    private static function writeRustyUnguarded(string $path, array $ops, array $styles, array $csv): void
+    private static function writeRustyUnguarded(string $path, array $ops, array $styles, array $csv, bool $autoSize): void
     {
         $writer = Writer::create($path, $csv === [] ? [] : ['csv' => $csv]);
+        if ($autoSize) {
+            $writer->autoSizeColumns();
+        }
         $ids = [];
         $id = function (?string $name) use (&$ids, $styles, $writer): ?int {
             if ($name === null) {
@@ -202,6 +206,9 @@ final class WriterParity
             switch ($op[0]) {
                 case 'sheet':
                     $writer->addSheet($op[1]);
+                    if ($autoSize) {
+                        $writer->autoSizeColumns(); // a new sheet (the first call only names the first)
+                    }
                     break;
                 case 'width':
                     $writer->setColumnWidth($op[1], $op[2]);

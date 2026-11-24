@@ -104,8 +104,9 @@ final class Reader
 /**
  * Streaming spreadsheet writer producing the same files as OpenSpout 5.15's writers:
  * identical styles.xml and cell XML for XLSX, byte-identical CSV. Deliberate XLSX
- * differences: no <dimension> element, no empty comments/VML/shared-strings parts,
- * and numbers at full precision (OpenSpout keeps 14 significant digits).
+ * differences: no <dimension> element (except on auto-sized sheets), no empty
+ * comments/VML/shared-strings parts, and numbers at full precision (OpenSpout keeps
+ * 14 significant digits).
  * Not constructible with `new`; use Writer::create().
  */
 final class Writer
@@ -115,6 +116,7 @@ final class Writer
      *   format?: 'xlsx'|'csv'|'tsv',
      *   date_format?: string,      // style for dates without time; default 'yyyy-mm-dd'
      *   datetime_format?: string,  // style for dates with time; default 'yyyy-mm-dd hh:mm:ss'
+     *   temp_dir?: string,         // where auto-sized sheets buffer their rows; default sys_get_temp_dir()
      *   csv?: array{delimiter?: string, enclosure?: string, bom?: bool, eol?: string},
      * } $options                   // CSV defaults: ',' (tab for .tsv), '"', BOM on, "\n"
      *
@@ -138,6 +140,24 @@ final class Writer
     public function freezePanes(int $rows, int $columns = 0): void {}
 
     public function showGridLines(bool $show): void {}
+
+    /**
+     * Size columns to their content, like PhpSpreadsheet's auto-size (its default,
+     * approximate mode): each cell's text as its number format shows it, counted in
+     * characters (wide East Asian characters twice), scaled for the cell's font and size,
+     * with room for the dropdown in an autofilter's header row and for centred text.
+     * Before the sheet's first row. setColumnWidth() wins for the columns it names.
+     * Not measured: formulas (no calculated value), and cells in merges declared before
+     * their row (except the first cell of a one-column merge). The sheet's rows are
+     * buffered in a temp file (`temp_dir`) until the sheet ends, which also lets the
+     * sheet carry a <dimension>. No-op for CSV.
+     *
+     * @param true|list<int> $columns true for every column, or 1-based column numbers
+     *
+     * @throws \ValueError     Column numbers that aren't positive ints, or out of range.
+     * @throws WriterException After the sheet's first row.
+     */
+    public function autoSizeColumns(bool|array $columns = true): void {}
 
     /**
      * Merge a range of the current sheet, e.g. 'A1:H1', any time before the sheet ends
