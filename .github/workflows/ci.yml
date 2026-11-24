@@ -1,12 +1,18 @@
 # The regression gate on every push and pull request, minus the local-only checks:
 # the benchmark baseline (recorded on a developer machine; shared runners are too
 # noisy) and sheet-stream's suite (another repository).
+#
+# Pull requests get the fast Linux checks, all in parallel. The slow or queue-bound
+# checks run elsewhere: macOS on pushes to main (and nightly), long fuzzing nightly
+# (see nightly.yml). PRs only check that the fuzz targets still build.
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
 
 permissions:
   contents: read
@@ -15,58 +21,90 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PHP_EXTENSIONS: zip, mbstring, iconv, gd, intl
+
 jobs:
-  test:
-    name: Lint, tests and coverage (PHP ${{ matrix.php }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04]
-        php: ['8.4', '8.5']
-        include:
-          - os: macos-15
-            php: '8.5'
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ matrix.php }}
-          extensions: zip, mbstring, iconv, gd, intl
-          tools: composer, phpize, php-config
+          php-version: '8.5'
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          tools: phpize, php-config
           coverage: none
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt, llvm-tools-preview
+          components: clippy, rustfmt
+      # Caches are saved from main only; PRs restore main's and don't churn new ones.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: php8.5
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: make lint
 
+  coverage:
+    name: Tests and coverage (PHP 8.5)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          tools: composer, phpize, php-config
+          coverage: none
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-
-      # The extension is compiled against the PHP headers; without the PHP version
-      # in the key, one matrix job reuses a build for another PHP's module API.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: php${{ matrix.php }}
-
-      - name: Lint
-        run: make lint
-
+          key: php8.5
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rust and PHP tests under coverage (targets, ratchet, exclusions)
         run: make coverage
-
       - name: Coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-php${{ matrix.php }}-${{ matrix.os }}
+          name: coverage
           path: target/coverage/
           if-no-files-found: ignore
 
-  fuzz:
-    name: Fuzz (30 s per target)
+  # The other supported PHP versions: a plain debug build and the Pest suite. The
+  # Rust tests and coverage don't depend on the PHP version, so they run once above.
+  php-compat:
+    name: PHP tests (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: ${{ env.PHP_EXTENSIONS }}
+          tools: composer, phpize, php-config
+          coverage: none
+      - uses: dtolnay/rust-toolchain@stable
+      # The extension is compiled against the PHP headers; without the PHP version
+      # in the key, one PHP version reuses a build for another's module API.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: php${{ matrix.php }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: make test-php
+
+  fuzz-build:
+    name: Fuzz targets build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -77,11 +115,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
-      - name: Fuzz
-        run: FUZZ_SECONDS=30 ./scripts/fuzz.sh
-      - name: Crashing inputs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-artifacts
-          path: fuzz/artifacts/
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build every fuzz target
+        working-directory: fuzz
+        run: |
+          cargo +nightly fuzz build --release --target "$(rustc +nightly -vV | sed -n 's/^host: //p')"
+
+  # macOS runners queue for minutes, so they stay off pull requests.
+  macos:
+    name: Tests (PHP 8.5, macOS)
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/macos.yml

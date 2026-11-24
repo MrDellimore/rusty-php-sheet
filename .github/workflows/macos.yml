@@ -1,0 +1,29 @@
+# Rust and PHP tests on macOS (arm64). Called from ci.yml on pushes to main and from
+# nightly.yml; kept off pull requests because macOS runners queue for minutes.
+name: macOS tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (PHP 8.5, macos-15)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          extensions: zip, mbstring, iconv, gd, intl
+          tools: composer, phpize, php-config
+          coverage: none
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: php8.5
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: make test
