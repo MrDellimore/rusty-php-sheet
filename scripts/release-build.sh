@@ -26,7 +26,9 @@ esac
 case "$(uname -s)" in
     Linux)
         os=linux
-        if ldd --version 2>&1 | grep -qi musl; then libc=musl; else libc=glibc; fi
+        # Not `ldd --version | grep musl`: musl's ldd exits 1, which pipefail turns into
+        # a failed test, so Alpine would be mislabelled glibc.
+        if compgen -G '/lib/ld-musl-*' >/dev/null; then libc=musl; else libc=glibc; fi
         built=target/release/librusty_sheet.so
         ;;
     Darwin)

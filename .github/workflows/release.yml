@@ -9,6 +9,14 @@ name: Release
 on:
   push:
     tags: ['*.*.*', 'v*.*.*']
+  # Dry runs: build and test every binary without publishing a release.
+  pull_request:
+    paths: ['.github/workflows/release.yml', 'scripts/release-build.sh']
+  workflow_dispatch:
+
+env:
+  # Tag pushes name the assets after the tag; dry runs use a placeholder.
+  RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '0.0.0-dev' }}
 
 permissions:
   contents: read
@@ -40,8 +48,20 @@ jobs:
         env:
           phpts: ${{ matrix.ts == 'zts' && 'ts' || 'nts' }}
       - uses: dtolnay/rust-toolchain@stable
+      # Ubuntu 22.04's libclang 14 can't parse the SSE intrinsics PHP 8.4+'s headers
+      # pull in, so bindgen fails; use LLVM 18 (what ubuntu-24.04 ships).
+      - name: Install libclang 18
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm.sh -o llvm.sh
+          sudo bash llvm.sh 18
+          sudo apt-get install -y libclang-18-dev
+          rm llvm.sh
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+          # bindgen takes clang's built-in headers (emmintrin.h) from the `clang`
+          # binary, which is still 14 on PATH; point it at 18 as well.
+          echo "CLANG_PATH=/usr/bin/clang-18" >> "$GITHUB_ENV"
       - name: Build, test, package
-        run: RELEASE_VERSION=${GITHUB_REF_NAME} ./scripts/release-build.sh
+        run: ./scripts/release-build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: glibc-${{ matrix.arch }}-php${{ matrix.php }}-${{ matrix.ts }}
@@ -68,7 +88,7 @@ jobs:
       - name: Build, test, package in php:${{ matrix.php }}-${{ matrix.ts == 'zts' && 'zts' || 'cli' }}-alpine
         run: |
           docker run --rm -v "$PWD:/src" -w /src \
-            -e RELEASE_VERSION="$GITHUB_REF_NAME" \
+            -e RELEASE_VERSION \
             -e COMPOSER_FLAGS="--ignore-platform-req=ext-gd --ignore-platform-req=ext-intl" \
             "php:${{ matrix.php }}-${{ matrix.ts == 'zts' && 'zts' || 'cli' }}-alpine" sh -euc '
               apk add --no-cache bash build-base clang-dev curl git libzip-dev zip linux-headers
@@ -104,7 +124,7 @@ jobs:
           phpts: ${{ matrix.ts == 'zts' && 'ts' || 'nts' }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Build, test, package
-        run: RELEASE_VERSION=${GITHUB_REF_NAME} ./scripts/release-build.sh
+        run: ./scripts/release-build.sh
       - uses: actions/upload-artifact@v4
         with:
           name: macos-arm64-php${{ matrix.php }}-${{ matrix.ts }}
@@ -113,6 +133,7 @@ jobs:
   publish:
     name: GitHub release
     needs: [glibc, musl, macos]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: write

@@ -62,7 +62,7 @@ function csv_options_for(string $rel): array
 function parity_cases(): array
 {
     $cases = [];
-    foreach (glob(fixtures_path('{edge,laravel-excel}/*.{xlsx,csv,tsv}'), GLOB_BRACE) as $file) {
+    foreach (fixture_files() as $file) {
         foreach (array_keys(parity_modes()) as $mode) {
             $rel = basename(dirname($file)) . '/' . basename($file);
             $cases["$rel [$mode]"] = [$rel, $mode];
