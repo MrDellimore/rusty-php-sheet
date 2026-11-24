@@ -2,6 +2,7 @@
 # Build the extension for the PHP on PATH, test it, and package it for PIE.
 #
 #   RELEASE_VERSION=0.1.0 scripts/release-build.sh
+#   SKIP_TESTS=1 RELEASE_VERSION=0.1.0 scripts/release-build.sh   # build and package only
 #
 # Writes dist/php_rusty_sheet-{version}_php{X.Y}-{arch}-{os}-{libc}-{nts|zts}.zip
 # with rusty_sheet.so inside: the asset name PIE's `pre-packaged-binary` download
@@ -47,9 +48,17 @@ fi
 echo "==> build for PHP $php_version $ts on $arch-$os-$libc"
 cargo build --release --locked -p rusty_sheet
 
-echo "==> test the built extension"
-(cd php && composer install --no-interaction --no-progress ${COMPOSER_FLAGS:-})
-(cd php && "$PHP" -d "extension=$ROOT/$built" vendor/bin/pest --colors=never)
+if [ -n "${SKIP_TESTS:-}" ]; then
+    # Still check that the extension loads into this PHP and reports the right version.
+    echo "==> SKIP_TESTS set: check the extension loads, skip the test suite"
+    "$PHP" -n -d "extension=$ROOT/$built" -r \
+        'exit(phpversion("rusty_sheet") === $argv[1] ? 0 : 1);' "$VERSION" \
+        || { echo "the built extension didn't load, or isn't version $VERSION" >&2; exit 1; }
+else
+    echo "==> test the built extension"
+    (cd php && composer install --no-interaction --no-progress ${COMPOSER_FLAGS:-})
+    (cd php && "$PHP" -d "extension=$ROOT/$built" vendor/bin/pest --colors=never)
+fi
 
 name="php_rusty_sheet-${VERSION}_php${php_version}-${arch}-${os}-${libc}-${ts}"
 mkdir -p dist "dist/$name"
