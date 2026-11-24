@@ -53,6 +53,7 @@ pub enum CellValue {
     Formula {
         formula: String,
         /// The cached result, or `None` if the writing application didn't store one.
+        /// An error result (`#N/A`, `#DIV/0!`, …) or an unreadable one is `Some(Null)`.
         cached: Option<Box<CellValue>>,
     },
 }

@@ -373,14 +373,9 @@ impl SheetRows {
             let has_cached = c.kind == CellType::InlineString
                 || !c.v.is_empty()
                 || (c.has_v && c.kind == CellType::Str);
-            let cached = if has_cached {
-                match self.raw_value() {
-                    CellValue::Null => None,
-                    v => Some(Box::new(v)),
-                }
-            } else {
-                None
-            };
+            // An error result (`#DIV/0!`, …) is a cached value too: `Some(Null)`, so
+            // callers can tell it apart from a formula that was never calculated.
+            let cached = has_cached.then(|| Box::new(self.raw_value()));
             let formula = self.formula_text(row);
             return CellValue::Formula { formula, cached };
         }
