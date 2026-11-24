@@ -9,20 +9,33 @@ function fixtures_path(string $relative = ''): string
 }
 
 /**
+ * The committed xlsx, csv and tsv fixtures, sorted. No GLOB_BRACE: musl's glob()
+ * (Alpine) doesn't support it, so brace patterns there match nothing.
+ *
+ * @return list<string> absolute paths
+ */
+function fixture_files(): array
+{
+    $files = [];
+    foreach (['edge', 'laravel-excel'] as $dir) {
+        foreach (['xlsx', 'csv', 'tsv'] as $ext) {
+            $files = array_merge($files, glob(fixtures_path("$dir/*.$ext")) ?: []);
+        }
+    }
+    sort($files);
+
+    return $files;
+}
+
+/**
  * Every committed spreadsheet fixture that OpenSpout can read (xlsx, csv, tsv).
  *
  * @return array<string, array{string}> label => [absolute path]
  */
 function readable_fixtures(): array
 {
-    $files = array_merge(
-        glob(fixtures_path('edge/*.{xlsx,csv,tsv}'), GLOB_BRACE),
-        glob(fixtures_path('laravel-excel/*.{xlsx,csv,tsv}'), GLOB_BRACE),
-    );
-    sort($files);
-
     $out = [];
-    foreach ($files as $file) {
+    foreach (fixture_files() as $file) {
         $out[basename(dirname($file)) . '/' . basename($file)] = [$file];
     }
 

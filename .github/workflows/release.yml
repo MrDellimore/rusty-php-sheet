@@ -57,6 +57,9 @@ jobs:
           sudo apt-get install -y libclang-18-dev
           rm llvm.sh
           echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+          # bindgen takes clang's built-in headers (emmintrin.h) from the `clang`
+          # binary, which is still 14 on PATH; point it at 18 as well.
+          echo "CLANG_PATH=/usr/bin/clang-18" >> "$GITHUB_ENV"
       - name: Build, test, package
         run: ./scripts/release-build.sh
       - uses: actions/upload-artifact@v4
