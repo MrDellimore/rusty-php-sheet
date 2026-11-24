@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "gen_fixture"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "zip",
 ]
@@ -1150,7 +1150,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty_sheet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ext-php-rs",
  "rusty_sheet_core",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "rusty_sheet_core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "criterion",
  "flate2",
