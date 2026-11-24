@@ -561,16 +561,7 @@ fn place(cells: &mut Vec<CellValue>, col: usize, value: CellValue) {
 
 /// Drop trailing cells that PHP would see as `''`.
 fn trim_trailing_blanks(cells: &mut Vec<CellValue>, shared: &SharedStrings) {
-    while let Some(last) = cells.last() {
-        let blank = match last {
-            CellValue::Empty => true,
-            CellValue::String(s) | CellValue::IsoDate(s) => s.is_empty(),
-            CellValue::SharedString(i) => shared.get(*i).is_some_and(str::is_empty),
-            _ => false,
-        };
-        if !blank {
-            break;
-        }
+    while cells.last().is_some_and(|c| c.is_blank(shared)) {
         cells.pop();
     }
 }

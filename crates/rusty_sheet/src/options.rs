@@ -52,6 +52,8 @@ pub struct ReaderOptions {
     pub calculated_formulas: bool,
     pub formulas_without_cached_value: UncachedFormula,
     pub preserve_empty_rows: bool,
+    /// `empty_cells => null`: blank cells inside a row become `null` instead of `''`.
+    pub empty_cells_null: bool,
     pub on_error: OnError,
     pub csv: CsvSettings,
 }
@@ -65,6 +67,7 @@ impl Default for ReaderOptions {
             calculated_formulas: false,
             formulas_without_cached_value: UncachedFormula::Null,
             preserve_empty_rows: false,
+            empty_cells_null: false,
             on_error: OnError::Throw,
             csv: CsvSettings::default(),
         }
@@ -78,6 +81,7 @@ const KNOWN: &[&str] = &[
     "calculated_formulas",
     "formulas_without_cached_value",
     "preserve_empty_rows",
+    "empty_cells",
     "on_error",
     "csv",
 ];
@@ -130,6 +134,13 @@ impl ReaderOptions {
                     }
                 }
                 "preserve_empty_rows" => o.preserve_empty_rows = boolean(&key, value)?,
+                "empty_cells" => {
+                    o.empty_cells_null = match nullable_string(&key, value) {
+                        Ok(None) => true,
+                        Ok(Some(s)) if s.is_empty() => false,
+                        _ => return Err(invalid_option(&key, "expected '' or null")),
+                    }
+                }
                 "on_error" => {
                     o.on_error = match string(&key, value)?.as_str() {
                         "throw" => OnError::Throw,

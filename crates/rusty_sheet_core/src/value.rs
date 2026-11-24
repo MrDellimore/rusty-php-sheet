@@ -5,6 +5,8 @@
 //! based on the reader options (`dates`, `calculated_formulas`); see the table in
 //! `docs/implementation-plan.md`, Phase 2.
 
+use crate::xlsx::SharedStrings;
+
 /// A number format id (`numFmtId`), built-in (< 164) or custom.
 /// Resolve the format code with `Styles::format_code`; it's needed to render
 /// dates in `formatted` mode.
@@ -59,6 +61,19 @@ pub enum CellValue {
 }
 
 impl CellValue {
+    /// Whether PHP would see this cell as `''`: an empty cell, or empty text
+    /// (inline, shared or `t="d"`). The reader trims these from the end of a row,
+    /// and `empty_cells => null` turns the ones inside a row into `null`.
+    /// A formula is never blank, whatever its cached value.
+    pub fn is_blank(&self, shared: &SharedStrings) -> bool {
+        match self {
+            CellValue::Empty => true,
+            CellValue::String(s) | CellValue::IsoDate(s) => s.is_empty(),
+            CellValue::SharedString(i) => shared.get(*i).is_some_and(str::is_empty),
+            _ => false,
+        }
+    }
+
     /// Build a numeric value with OpenSpout's int-vs-float rule:
     /// integral values that fit in i64 become `Int`.
     pub fn number(v: f64) -> CellValue {
@@ -76,6 +91,33 @@ impl CellValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_cells_are_empty_or_empty_text() {
+        let shared = SharedStrings::from_strs(&["a", ""]);
+        for blank in [
+            CellValue::Empty,
+            CellValue::String(String::new()),
+            CellValue::IsoDate(String::new()),
+            CellValue::SharedString(1),
+        ] {
+            assert!(blank.is_blank(&shared), "{blank:?}");
+        }
+        for not_blank in [
+            CellValue::String(" ".into()),
+            CellValue::SharedString(0),
+            CellValue::SharedString(9), // out of range: not known to be empty
+            CellValue::Int(0),
+            CellValue::Null,
+            CellValue::Bytes(Vec::new()),
+            CellValue::Formula {
+                formula: "\"\"".into(),
+                cached: Some(Box::new(CellValue::String(String::new()))),
+            },
+        ] {
+            assert!(!not_blank.is_blank(&shared), "{not_blank:?}");
+        }
+    }
 
     #[test]
     fn integral_numbers_become_int() {

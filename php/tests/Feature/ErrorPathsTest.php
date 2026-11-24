@@ -36,6 +36,8 @@ describe('reader options', function () {
         'formulas_without_cached_value null' => [['formulas_without_cached_value' => 'null']],
         'formulas_without_cached_value throw' => [['formulas_without_cached_value' => 'throw']],
         'formulas_without_cached_value formula' => [['formulas_without_cached_value' => 'formula']],
+        "empty_cells ''" => [['empty_cells' => '']],
+        'empty_cells null' => [['empty_cells' => null]],
         'null format and timezone' => [['format' => null, 'timezone' => null]],
         'null csv' => [['csv' => null]],
     ]);

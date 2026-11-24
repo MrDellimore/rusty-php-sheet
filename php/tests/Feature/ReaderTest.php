@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use RustySheet\Dev\TinyXlsx;
 use RustySheet\Reader;
 use RustySheet\ReaderException;
 use RustySheet\UnsupportedFormatException;
@@ -66,7 +67,53 @@ describe('options', function () {
         'csv not an array' => [['csv' => ';'], 'expected an array'],
         'csv unknown key' => [['csv' => ['separator' => ';']], 'unknown option'],
         'csv multi-char delimiter' => [['csv' => ['delimiter' => '::']], 'single character'],
+        'empty_cells not blank or null' => [['empty_cells' => 'x'], "expected '' or null"],
+        'empty_cells false' => [['empty_cells' => false], "expected '' or null"],
     ]);
+});
+
+describe('empty_cells', function () {
+    // A1 = 1, B1 a gap, C1 empty inline text, D1 an empty t="str", E1 = ' ', F1 = 5, then a
+    // trailing empty cell. Row 2 is an empty-text formula, which is not blank.
+    $rows = '<row r="1"><c r="A1"><v>1</v></c><c r="C1" t="inlineStr"><is><t></t></is></c>'
+        .'<c r="D1" t="str"><v></v></c><c r="E1" t="inlineStr"><is><t xml:space="preserve"> </t></is></c>'
+        .'<c r="F1"><v>5</v></c><c r="G1"/></row>'
+        .'<row r="2"><c r="A2" t="str"><f>""</f><v></v></c><c r="B2"><v>2</v></c></row>';
+
+    it('gives blank cells inside a row as \'\' by default', function (array $options) use ($rows) {
+        $path = TinyXlsx::write(sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.xlsx', $rows);
+
+        expect(Reader::open($path, $options)->nextRows(0))->toBe([
+            1 => [1, '', '', '', ' ', 5],
+            2 => ['=""', 2],
+        ]);
+        unlink($path);
+    })->with(['default' => [[]], "''" => [['empty_cells' => '']]]);
+
+    it('gives them as null with empty_cells => null', function () use ($rows) {
+        $path = TinyXlsx::write(sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.xlsx', $rows);
+
+        expect(Reader::open($path, ['empty_cells' => null])->nextRows(0))->toBe([
+            1 => [1, null, null, null, ' ', 5],
+            2 => ['=""', 2],
+        ])->and(Reader::open($path, ['empty_cells' => null, 'calculated_formulas' => true])->nextRows(0))->toBe([
+            1 => [1, null, null, null, ' ', 5],
+            2 => ['', 2],
+        ]);
+        unlink($path);
+    });
+
+    it('applies to CSV fields and preserved blank lines', function () {
+        $path = sys_get_temp_dir().'/'.uniqid('rs_empty_', true).'.csv';
+        file_put_contents($path, "a,,c\n\n,b\n");
+
+        expect(Reader::open($path, ['empty_cells' => null, 'preserve_empty_rows' => true])->nextRows(0))->toBe([
+            1 => ['a', null, 'c'],
+            2 => [null],
+            3 => [null, 'b'],
+        ]);
+        unlink($path);
+    });
 });
 
 describe('nextRows', function () {

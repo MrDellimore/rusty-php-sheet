@@ -52,6 +52,7 @@ final class Reader
      *   calculated_formulas?: bool,              // default false → "=FORMULA" strings
      *   formulas_without_cached_value?: 'null'|'throw'|'formula', // default 'null'; only with calculated_formulas
      *   preserve_empty_rows?: bool,              // default false
+     *   empty_cells?: ''|null,                   // blank cells inside a row; default ''
      *   on_error?: 'throw'|'skip_row',           // recoverable row errors; default 'throw'
      *   csv?: array{
      *     delimiter?: string,                    // one byte; default ',' (tab for .tsv)
@@ -70,6 +71,10 @@ final class Reader
      * `timezone`) and DateInterval for elapsed-time formats like [h]:mm:ss. 'formatted' gives
      * the display string for the cell's number format, exactly as OpenSpout 5.15's
      * SHOULD_FORMAT_DATES renders it (sheet-stream's WithFormatData); other numbers stay numbers.
+     *
+     * Blank cells: a gap in a row, or empty text, gives '' (OpenSpout parity) or, with
+     * empty_cells => null, null (Laravel Excel parity). Trailing blank cells are always trimmed.
+     * A formula is never blank, even when its cached value is ''.
      *
      * Formulas: with calculated_formulas, a formula the writing application never calculated
      * (no cached value) gives null, or per formulas_without_cached_value: 'throw' makes

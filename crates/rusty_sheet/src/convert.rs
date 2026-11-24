@@ -7,7 +7,7 @@
 //! | Date (any)           | dates = formatted: the display string OpenSpout renders (SHOULD_FORMAT_DATES) |
 //! | Formula              | "=FORMULA", or the cached value with `calculated_formulas` |
 //! | Formula, never calculated | with `calculated_formulas`: per `formulas_without_cached_value` (null, throw, "=FORMULA") |
-//! | Empty (mid-row gap)  | ''                                                               |
+//! | Empty (mid-row gap)  | '', or null with `empty_cells => null` (also for empty text)     |
 
 use std::collections::HashMap;
 
@@ -74,7 +74,11 @@ impl<'a> Converter<'a> {
         let mut arr = ZendHashTable::with_capacity(cells.len() as u32);
         for (col, cell) in cells.iter().enumerate() {
             self.at = (number, col);
-            arr.push(self.value(cell)?)?;
+            if self.opts.empty_cells_null && cell.is_blank(self.shared) {
+                arr.push(Zval::null())?;
+            } else {
+                arr.push(self.value(cell)?)?;
+            }
         }
         Ok(arr)
     }
