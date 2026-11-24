@@ -43,11 +43,14 @@ seed() {
     esac
 }
 
-cargo +nightly fuzz build --release >/dev/null
+# Build for the host triple: a prebuilt cargo-fuzz (CI installs one) otherwise
+# defaults to the triple it was itself built for, e.g. x86_64-unknown-linux-musl.
+TARGET="$(rustc +nightly -vV | sed -n 's/^host: //p')"
+cargo +nightly fuzz build --release --target "$TARGET" >/dev/null
 for t in "${TARGETS[@]}"; do
     seed "$t"
     echo "==> fuzz $t (${SECONDS_PER_TARGET}s, $(ls "corpus/$t" | wc -l | tr -d ' ') seeds)"
-    cargo +nightly fuzz run "$t" "corpus/$t" -- \
+    cargo +nightly fuzz run --target "$TARGET" "$t" "corpus/$t" -- \
         -max_total_time="$SECONDS_PER_TARGET" -timeout=10 -rss_limit_mb=2048 \
         -print_final_stats=1 2>&1 | grep -E 'stat::number_of_executed_units|SUMMARY|panicked|ERROR|Test unit written' || true
     if [ -n "$(ls -A "artifacts/$t" 2>/dev/null)" ]; then

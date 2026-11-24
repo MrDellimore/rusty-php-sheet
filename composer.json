@@ -1,0 +1,18 @@
+{
+    "name": "mrdellimore/rusty-sheet",
+    "description": "Rust-powered PHP extension for streaming XLSX and CSV: OpenSpout-compatible reading and writing, hundreds of times faster, with flat memory.",
+    "type": "php-ext",
+    "license": "MIT",
+    "keywords": ["xlsx", "csv", "spreadsheet", "excel", "openspout", "extension", "rust"],
+    "homepage": "https://github.com/MrDellimore/rusty-php-sheet",
+    "require": {
+        "php": "~8.4.0 || ~8.5.0"
+    },
+    "php-ext": {
+        "extension-name": "rusty_sheet",
+        "support-zts": true,
+        "support-nts": true,
+        "os-families": ["linux", "darwin"],
+        "download-url-method": ["pre-packaged-binary"]
+    }
+}
