@@ -45,7 +45,11 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      # The extension is compiled against the PHP headers; without the PHP version
+      # in the key, one matrix job reuses a build for another PHP's module API.
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: php${{ matrix.php }}
 
       - name: Lint
         run: make lint
