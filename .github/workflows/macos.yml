@@ -1,8 +1,11 @@
-# Rust and PHP tests on macOS (arm64). Called from ci.yml on pushes to main and from
-# nightly.yml; kept off pull requests because macOS runners queue for minutes.
+# Rust and PHP tests on macOS (arm64), on pushes to main and from nightly.yml. Kept
+# off pull requests and out of ci.yml: GitHub's macOS runners can queue long enough to
+# be cancelled, and that shouldn't fail CI. Check this workflow's own status instead.
 name: macOS tests
 
 on:
+  push:
+    branches: [main]
   workflow_call:
   workflow_dispatch:
 

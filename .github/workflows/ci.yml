@@ -121,8 +121,5 @@ jobs:
         run: |
           cargo +nightly fuzz build --release --target "$(rustc +nightly -vV | sed -n 's/^host: //p')"
 
-  # macOS runners queue for minutes, so they stay off pull requests.
-  macos:
-    name: Tests (PHP 8.5, macOS)
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/macos.yml
+  # macOS tests run in their own workflow (macos.yml) on pushes to main, so a macOS
+  # runner that never starts can't fail this run.

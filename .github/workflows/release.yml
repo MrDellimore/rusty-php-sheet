@@ -156,7 +156,7 @@ jobs:
 
   # macOS arm64 binaries, added to the release after it's published. GitHub's macOS
   # runners can queue for a long time, so they don't hold back the Linux binaries,
-  # and they skip the PHP suite here (macOS is tested in ci.yml on every push to main).
+  # and they skip the PHP suite here (macOS is tested by macos.yml on every push to main).
   # If one never gets a runner, re-run the failed jobs of this workflow run.
   macos:
     name: macOS arm64, PHP ${{ matrix.php }} ${{ matrix.ts }}
